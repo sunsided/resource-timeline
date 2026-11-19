@@ -10,7 +10,8 @@ Resource timelines for onboard scheduling: energy, memory, thermal and communica
 
 ## Status
 
-Pre-release. Version 0.0.0 reserves the name; the API is not started yet and will change.
+Pre-release. Milestone 1 of [docs/design.md](docs/design.md) is implemented: piecewise-constant
+timelines for depletable and claimable resources with first-violation explanations. The API will change.
 
 ## License
 
