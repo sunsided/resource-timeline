@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc bb04ea67313cd9e5fb682d1db960231e1ef8de7bccff528b51005df58708f657 # shrinks to timeline = Timeline { kind: Claimable, start: 0, initial: 1, bounds: Bounds { min: 0, max: 1 }, budget: 64, impacts: [(ActivityId(0), Claim { start: 0, end: 4, amount: 1 }), (ActivityId(0), Claim { start: 4, end: 5, amount: 1 })] }
+cc dd6c7f8baaf8b8e213fa9a185d43cfa412afd8c57ad763b893559b234dd74a13 # shrinks to timeline = Timeline { kind: Depletable, start: 0, initial: 1, bounds: Bounds { min: 0, max: 11 }, budget: 64, impacts: [(ActivityId(0), Claim { start: 1, end: 5, amount: 1 }), (ActivityId(0), Claim { start: 5, end: 6, amount: 1 })] }
