@@ -105,6 +105,7 @@
 extern crate alloc;
 
 mod activity;
+pub mod codec;
 #[cfg(feature = "alloc")]
 pub mod envelope;
 mod error;
@@ -112,6 +113,8 @@ mod error;
 pub mod greedy;
 mod impact;
 mod plan;
+#[cfg(feature = "serde")]
+mod serde_impls;
 mod state;
 pub mod storage;
 mod target;

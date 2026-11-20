@@ -7,6 +7,7 @@ use crate::{ActivityId, Level, Tick};
 
 /// The bound a level broke, with the bound's value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Bound {
     /// The level fell below the lower bound (reserve, or no units left to claim).
     BelowMin(Level),

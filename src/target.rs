@@ -29,6 +29,7 @@ use crate::{Level, Tick};
 /// # Ok::<(), resource_timeline::Error>(())
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Target {
     /// The tick at which the level is checked. Not before the timeline start.
     pub at: Tick,

@@ -14,9 +14,13 @@ categories = ["aerospace", "algorithms", "no-std"]
 [features]
 default = ["alloc"]
 ## Heap storage, envelopes and the greedy scheduler. Without it the crate needs no allocator.
-alloc = []
+alloc = ["serde?/alloc"]
+## Serialize and Deserialize for the plain data types, timelines and profiles (deserializing
+## timelines and profiles also needs `alloc`).
+serde = ["dep:serde"]
 
 [dependencies]
+serde = { version = "1.0.228", default-features = false, features = ["derive"], optional = true }
 
 [lints.rust]
 missing_docs = "warn"
@@ -29,6 +33,7 @@ missing_docs_in_private_items = "warn"
 [dev-dependencies]
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 proptest = "1.11.0"
+serde_json = "1.0.149"
 
 [[bench]]
 name = "timeline"

@@ -72,6 +72,20 @@ pub enum Error {
         /// The requested latest start.
         latest: Tick,
     },
+    /// An output buffer is too short for an encoding.
+    BufferTooSmall {
+        /// The number of bytes the encoding needs.
+        needed: usize,
+    },
+    /// Encoded bytes have the wrong magic, length or content.
+    Malformed,
+    /// Encoded bytes do not match their checksum.
+    ChecksumMismatch,
+    /// Encoded bytes use a format version this build does not read.
+    UnsupportedVersion {
+        /// The version found.
+        version: u8,
+    },
     /// A sampling step is zero or negative.
     InvalidStep {
         /// The rejected step.
@@ -180,6 +194,12 @@ impl fmt::Display for Error {
             } => write!(f, "{container} is full at {capacity} elements"),
             Self::InvalidWindow { earliest, latest } => {
                 write!(f, "invalid start window [{earliest}, {latest}]")
+            }
+            Self::BufferTooSmall { needed } => write!(f, "buffer too small, {needed} bytes needed"),
+            Self::Malformed => f.write_str("malformed encoding"),
+            Self::ChecksumMismatch => f.write_str("checksum mismatch"),
+            Self::UnsupportedVersion { version } => {
+                write!(f, "unsupported encoding version {version}")
             }
             Self::InvalidStep { step } => write!(f, "sampling step {step} is not positive"),
             Self::UnknownResource => f.write_str("demand names an unknown timeline"),

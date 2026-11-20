@@ -46,6 +46,7 @@ use crate::{ActivityId, Error, Tick, Window};
 
 /// Which time point of an activity a [`Precedence`] refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Endpoint {
     /// The start.
     Start,
@@ -62,6 +63,7 @@ pub enum Endpoint {
 /// constraints. `gap` may be negative. "`after` starts once `before` has ended" is
 /// [`Precedence::after_end`]; for a contingent `before` that waits for its actual end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Precedence {
     /// The earlier activity. Every envelope activity with this id is constrained.
     pub before: ActivityId,

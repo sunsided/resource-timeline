@@ -30,6 +30,7 @@ use crate::{Container, Error, Level, Tick};
 /// one it is constant (`slope` is zero there). Three `i64` per breakpoint, so a profile is as
 /// compact as the line it describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Breakpoint {
     /// The tick of the change.
     pub at: Tick,
@@ -195,6 +196,11 @@ pub struct LevelProfile<
 }
 
 impl<S: Storage> LevelProfile<S> {
+    /// A profile from its start breakpoint and its later, strictly increasing breakpoints.
+    pub(crate) const fn from_parts(origin: Breakpoint, changes: S::DoubleList<Breakpoint>) -> Self {
+        Self { origin, changes }
+    }
+
     /// The first tick of the profile, the start of the timeline it was exported from.
     #[must_use]
     pub const fn start(&self) -> Tick {

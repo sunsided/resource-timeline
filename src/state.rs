@@ -50,6 +50,7 @@ pub type StateValue = u32;
 
 /// One effect of an activity on a state timeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum StateImpact {
     /// The state becomes `value` at tick `at` and keeps it until the next set.
     Set {
@@ -243,6 +244,12 @@ impl<S: Storage> StateTimeline<S> {
     #[must_use]
     pub const fn initial(&self) -> StateValue {
         self.initial
+    }
+
+    /// The maximum number of impacts the timeline accepts.
+    #[must_use]
+    pub const fn budget(&self) -> usize {
+        self.budget
     }
 
     /// The impacts added so far, in insertion order.

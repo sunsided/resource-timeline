@@ -4,6 +4,7 @@ use crate::{ActivityId, Error, Impact, Level, Tick, Window};
 
 /// A tick of an activity, relative to its start or to its (uncertain) end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Anchor {
     /// The given number of ticks after the start (before it for a negative offset).
     Start(Tick),
@@ -31,6 +32,7 @@ impl Anchor {
 /// runs; a rate over the same interval drains energy for as long as it runs. The interval may
 /// be empty for the shortest duration (a zero-length run), but never inverted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Uncertain {
     /// A permanent change of the level at `at`.
     Step {

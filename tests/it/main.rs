@@ -1,5 +1,6 @@
 //! Integration tests for `resource-timeline`.
 
+mod codec;
 mod edge_cases;
 mod envelope;
 mod envelope_contingent;
@@ -12,4 +13,6 @@ mod greedy;
 mod oracle;
 mod plan;
 mod properties;
+#[cfg(feature = "serde")]
+mod serde_round_trip;
 mod state;

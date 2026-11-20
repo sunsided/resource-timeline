@@ -95,3 +95,35 @@ fn fixed_plan_places_and_searches() {
         other => panic!("unexpected {other:?}"),
     }
 }
+
+/// A fixed timeline and its profile round-trip through the byte encoding without allocation.
+#[test]
+fn fixed_encoding_round_trips() {
+    use resource_timeline::LevelProfile;
+
+    let bounds = Bounds::new(0, 50).expect("valid");
+    let mut battery = Timeline::<Fixed<4>>::depletable_in(0, 30, bounds, 4).expect("valid");
+    battery
+        .add(
+            ActivityId(1),
+            Impact::Rate {
+                start: 2,
+                end: 9,
+                per_tick: -3,
+            },
+        )
+        .expect("room");
+    let mut bytes = [0_u8; 256];
+    let written = battery.encode(&mut bytes).expect("room");
+    assert_eq!(
+        Timeline::<Fixed<4>>::decode_in(&bytes[..written]),
+        Ok(battery.clone())
+    );
+
+    let profile = battery.export().expect("small");
+    let written = profile.encode(&mut bytes).expect("room");
+    assert_eq!(
+        LevelProfile::<Fixed<4>>::decode_in(&bytes[..written]),
+        Ok(profile)
+    );
+}

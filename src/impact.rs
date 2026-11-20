@@ -16,6 +16,7 @@ use crate::{Level, Tick};
 /// Steps and rates are permanent (consumption and production persist), claims are returned at
 /// their end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Impact {
     /// A permanent change of the level, as for a consumable resource.
     ///

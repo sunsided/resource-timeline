@@ -55,6 +55,7 @@ impl Bounds {
 /// | Power bus share, comm channel, instrument (reusable) | [`Claimable`](Self::Claimable) | [`Impact::Claim`] |
 /// | Mode, visibility window | not numeric | see [`StateTimeline`](crate::StateTimeline) |
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Kind {
     /// Consumed and produced by permanent changes, for example energy or data volume.
     ///
@@ -260,6 +261,12 @@ impl<S: Storage> Timeline<S> {
     #[must_use]
     pub const fn bounds(&self) -> Bounds {
         self.bounds
+    }
+
+    /// The maximum number of impacts the timeline accepts.
+    #[must_use]
+    pub const fn budget(&self) -> usize {
+        self.budget
     }
 
     /// The impacts added so far, in insertion order.
