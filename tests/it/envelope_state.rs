@@ -12,7 +12,8 @@ type Generated = (i64, i64, Vec<StateImpact>);
 /// A state impact with small ticks and three values.
 fn impact(base: i64) -> impl Strategy<Value = StateImpact> {
     let set = (base..base + 6, 0_u32..3).prop_map(|(at, value)| StateImpact::Set { at, value });
-    let require = (base..base + 6, 1_i64..5, 0_u32..3).prop_map(|(start, length, value)| {
+    let length = prop_oneof![4 => 1_i64..5, 1 => Just(1_000_i64)];
+    let require = (base..base + 6, length, 0_u32..3).prop_map(|(start, length, value)| {
         StateImpact::Require {
             start,
             end: start + length,
@@ -268,6 +269,45 @@ fn hand_checked_conflict_and_mismatch() {
             requirer: ActivityId(3),
         })
     );
+}
+
+/// A requirement for the rest of time is decided without walking every tick.
+#[test]
+fn unbounded_requirement_terminates() {
+    let mut timeline = StateTimeline::new(0, 0, 8);
+    timeline
+        .add(
+            ActivityId(1),
+            StateImpact::Require {
+                start: 5,
+                end: Tick::MAX,
+                value: 0,
+            },
+        )
+        .expect("valid");
+    let late = [StateImpact::Set { at: 0, value: 1 }];
+    let flexible = [FlexibleState {
+        activity: ActivityId(2),
+        window: Window::new(0, 1_000_000_000).expect("valid"),
+        impacts: &late,
+    }];
+    let verdict = StateEnvelope::new(&timeline, &flexible)
+        .expect("valid")
+        .check()
+        .expect("memory");
+    // Once the set has happened in every schedule (at the latest start), the requirement fails
+    // in every schedule; found without walking a billion ticks.
+    assert_eq!(
+        verdict,
+        StateVerdict::Certain(StateEnvelopeViolation::Mismatch {
+            at: 1_000_000_000,
+            required: 0,
+            requirer: ActivityId(1),
+        })
+    );
+
+    let fixed_only = StateEnvelope::new(&timeline, &[]).expect("valid");
+    assert_eq!(fixed_only.check(), Ok(StateVerdict::Safe));
 }
 
 /// Guards against vacuous properties: all three verdicts occur.

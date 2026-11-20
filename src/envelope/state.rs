@@ -26,8 +26,13 @@
 //! within a piece the best start is its first (to stay early) or its last (to be latest). Two
 //! sets of different values conflict in some schedule if their tick ranges meet, in every
 //! schedule if both ranges are the same single tick. Both answers are exact for independent
-//! windows. Requirements are evaluated at every tick they may cover, so the cost grows with the
-//! window lengths: `O(L m^2)` for `L` covered ticks and `m` sets.
+//! windows.
+//!
+//! Every quantity compared is a window end plus an offset, or the tick plus a difference of two
+//! offsets of one activity, so the verdicts can only change near ticks where the two meet.
+//! Requirements are evaluated at those candidate ticks only, `O(f^2 k^3)` of them for `f`
+//! activities with `k` ticks each, at `O(m^2)` per tick for `m` sets; the cost does not grow
+//! with the window lengths or with requirements that last forever.
 
 use alloc::vec::Vec;
 
@@ -371,13 +376,16 @@ impl<'a, S: Storage> StateEnvelope<'a, S> {
             return Ok((None, None));
         };
 
-        for t in from..=to {
+        let settled = self.settled();
+        for t in self.candidate_ticks(&needs, from, to)? {
             if possible.is_some_and(|p| p.0 < t) && certain.is_some() {
                 break;
             }
 
             let options = self.options_at(t)?;
-            for need in needs.iter().filter(|need| self.may_cover(need, t)) {
+            let relevant =
+                |need: &&Need| self.may_cover(need, t) && t <= self.last_tick(need, settled);
+            for need in needs.iter().filter(relevant) {
                 let key = (t, need.activity, need.value);
                 if possible.is_none_or(|p| key < p) && self.possibly_broken(need, t, &options)? {
                     possible = Some(key);
@@ -416,15 +424,103 @@ impl<'a, S: Storage> StateEnvelope<'a, S> {
         })
     }
 
-    /// The ticks any requirement may cover, `None` without requirements.
+    /// The ticks worth evaluating for any requirement, `None` without requirements.
     fn coverage(&self, needs: &[Need]) -> Option<(Tick, Tick)> {
+        let settled = self.settled();
         let from = needs
             .iter()
             .map(|need| self.starts(need.entity).earliest() + need.start);
-        let to = needs
-            .iter()
-            .map(|need| self.starts(need.entity).latest() + need.end - 1);
+        let to = needs.iter().map(|need| self.last_tick(need, settled));
         Some((from.min()?, to.max()?))
+    }
+
+    /// The ticks in `[from, to]` at which a mismatch verdict can start to hold, sorted.
+    ///
+    /// Every quantity the predicates compare is a constant (a window end plus an offset) or the
+    /// tick plus a constant (a difference of two offsets of one activity), so a comparison can
+    /// only flip where the tick equals such a constant minus such a difference. Taking these
+    /// points (and two ticks either side, for strict comparisons and the `+ 1` of half-open
+    /// ends) plus each requirement's first covered tick finds the start of every interval on
+    /// which a predicate holds, without walking long windows tick by tick.
+    fn candidate_ticks(&self, needs: &[Need], from: Tick, to: Tick) -> Result<Vec<Tick>, Error> {
+        let mut constants: Vec<i128> = Vec::new();
+        let mut shifts: Vec<i128> = Vec::new();
+        for (index, entity) in self.entities.iter().enumerate() {
+            let mut offsets: Vec<i128> = Vec::new();
+            offsets.push(0);
+            offsets.extend(entity.sets.iter().map(|&(offset, _, _)| i128::from(offset)));
+            for need in needs.iter().filter(|need| need.entity == index) {
+                offsets.extend([i128::from(need.start), i128::from(need.end)]);
+            }
+
+            offsets.sort_unstable();
+            offsets.dedup();
+            let (lo, hi) = (
+                i128::from(entity.window.earliest()),
+                i128::from(entity.window.latest()),
+            );
+            constants.extend(
+                offsets
+                    .iter()
+                    .flat_map(|&offset| [lo + offset, hi + offset]),
+            );
+            for &p in &offsets {
+                shifts.extend(offsets.iter().map(|&q| p - q));
+            }
+        }
+
+        constants.sort_unstable();
+        constants.dedup();
+        shifts.sort_unstable();
+        shifts.dedup();
+        let (from_wide, to_wide) = (i128::from(from), i128::from(to));
+        let mut ticks: Vec<Tick> = Vec::new();
+        let mut push = |tick: i128| -> Result<(), Error> {
+            if from_wide <= tick && tick <= to_wide {
+                ticks.try_reserve(1).map_err(|_| Error::OutOfMemory)?;
+                ticks.push(Tick::try_from(tick).map_err(|_| Error::Overflow)?);
+            }
+
+            Ok(())
+        };
+        for need in needs {
+            push(i128::from(self.starts(need.entity).earliest()) + i128::from(need.start))?;
+        }
+
+        for &constant in &constants {
+            for &shift in &shifts {
+                for nudge in -2..=2 {
+                    push(constant - shift + nudge)?;
+                }
+            }
+        }
+
+        ticks.sort_unstable();
+        ticks.dedup();
+        Ok(ticks)
+    }
+
+    /// The latest tick any set can take, `None` without sets. After it every activity's
+    /// options are constant.
+    fn settled(&self) -> Option<Tick> {
+        self.set_ranges().map(|set| set.hi).max()
+    }
+
+    /// The last tick worth evaluating for `need`.
+    ///
+    /// Past both `settled` (the latest set tick) and the tick where every start of the
+    /// requirer covers the requirement, the other activities' options are constant, the
+    /// requirer's latest own set is fixed and its earliest covering start only grows. A
+    /// possible mismatch can then only disappear and a certain one stays as it is, so one tick
+    /// past both decides the rest of the (possibly unbounded) requirement.
+    fn last_tick(&self, need: &Need, settled: Option<Tick>) -> Tick {
+        let window = self.starts(need.entity);
+        let covered_end = i128::from(window.latest()) + i128::from(need.end) - 1;
+        let fully_covered = i128::from(window.latest()) + i128::from(need.start);
+        let settled = settled.map_or(i128::MIN, i128::from);
+        let last = covered_end.min(settled.max(fully_covered) + 1);
+        // The requirement end was validated to fit a tick at the latest start.
+        Tick::try_from(last).unwrap_or(Tick::MAX)
     }
 
     /// The start window of entity `index`.

@@ -2,7 +2,7 @@
 
 use proptest::prelude::*;
 use resource_timeline::envelope::{Envelope, Flexible, Verdict};
-use resource_timeline::{ActivityId, Bound, Bounds, Impact, Tick, Timeline, Window};
+use resource_timeline::{ActivityId, Bound, Bounds, Impact, Target, Tick, Timeline, Window};
 
 use crate::oracle;
 use crate::properties::{owned_impact, with_impacts};
@@ -10,14 +10,27 @@ use crate::properties::{owned_impact, with_impacts};
 /// A generated flexible activity: window start, window length and impacts relative to start.
 pub type Generated = (i64, i64, Vec<Impact>);
 
-/// A battery-like timeline with a few fixed impacts and up to three flexible activities whose
-/// windows start at or after its start.
+/// A battery-like timeline with a few fixed impacts, up to two end-state targets and up to
+/// three flexible activities whose windows start at or after its start.
 pub fn scenario() -> impl Strategy<Value = (Timeline, Vec<Generated>)> {
     let base = (-3_i64..3, 4_i64..=12, 8_i64..=16).prop_flat_map(|(start, initial, max)| {
-        prop::collection::vec(owned_impact(start, false), 0..4).prop_map(move |impacts| {
+        let target = (0_i64..25, 0_i64..=10);
+        let impacts = prop::collection::vec(owned_impact(start, false), 0..4);
+        let targets = prop::collection::vec(target, 0..3);
+        (impacts, targets).prop_map(move |(impacts, targets)| {
             let bounds = Bounds::new(0, max).expect("valid");
             let timeline = Timeline::depletable(start, initial, bounds, 64).expect("valid");
-            with_impacts(timeline, &impacts)
+            let mut timeline = with_impacts(timeline, &impacts);
+            for (offset, min) in targets {
+                timeline
+                    .add_target(Target {
+                        at: start + offset,
+                        min,
+                    })
+                    .expect("valid");
+            }
+
+            timeline
         })
     });
 
@@ -73,11 +86,15 @@ pub fn horizon(timeline: &Timeline, generated: &[Generated]) -> Tick {
     timeline.start() + 40 + Tick::try_from(generated.len()).expect("small")
 }
 
-/// Whether the level of `concrete` is out of its bounds at `t`.
+/// Whether the level of `concrete` is out of its bounds, or misses a target, at `t`.
 pub fn out_of_bounds(concrete: &Timeline, t: Tick) -> bool {
     let level = oracle::level_at(concrete, t);
     let bounds = concrete.bounds();
-    level < i128::from(bounds.min()) || level > i128::from(bounds.max())
+    let missed = concrete
+        .targets()
+        .iter()
+        .any(|target| target.at == t && level < i128::from(target.min));
+    level < i128::from(bounds.min()) || level > i128::from(bounds.max()) || missed
 }
 
 /// `timeline` and `generated` with every rate impact dropped.
@@ -98,7 +115,12 @@ fn without_rates(timeline: &Timeline, generated: &[Generated]) -> (Timeline, Vec
         })
         .collect();
 
-    (with_impacts(empty, &impacts), generated)
+    let mut stripped = with_impacts(empty, &impacts);
+    for &target in timeline.targets() {
+        stripped.add_target(target).expect("valid");
+    }
+
+    (stripped, generated)
 }
 
 proptest! {
@@ -149,8 +171,9 @@ proptest! {
         let bounds = timeline.bounds();
         let breaks = |t: Tick| {
             let (lower, upper) = (envelope.lower_at(t).expect("small"), envelope.upper_at(t).expect("small"));
-            let certain = upper < bounds.min() || lower > bounds.max();
-            let possible = lower < bounds.min() || upper > bounds.max();
+            let targets = timeline.targets().iter().filter(|target| target.at == t);
+            let certain = upper < bounds.min() || lower > bounds.max() || targets.clone().any(|target| upper < target.min);
+            let possible = lower < bounds.min() || upper > bounds.max() || targets.clone().any(|target| lower < target.min);
             (certain, possible)
         };
         let ticks = timeline.start()..=horizon(&timeline, &generated);

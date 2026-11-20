@@ -210,8 +210,11 @@ pub struct Heap;
 ///
 /// Containers are inline arrays: `N` impacts, sets, requirements, targets and contributors,
 /// `2 N` change points. Exceeding a capacity is reported as [`Error::CapacityExceeded`] and
-/// leaves the timeline unchanged. A `Timeline<Fixed<N>>` occupies roughly `100 N` bytes, so
-/// large `N` belong in a `static` or on a dedicated stack.
+/// leaves the timeline unchanged. A `Timeline<Fixed<N>>` occupies `144 N + 96` bytes on
+/// 64-bit targets (32 per impact, 96 for its two change points, 16 per target) and a
+/// `StateTimeline<Fixed<N>>` `72 N + 48`, so large `N` belong in a `static` or on a dedicated
+/// stack. A plan search keeps two change-point and two state scratch lists of the same
+/// capacities on the stack.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Fixed<const N: usize>;
 

@@ -181,3 +181,22 @@ fn budget_applies_below_capacity() {
         Err(Error::BudgetExhausted { limit: 1 })
     );
 }
+
+/// A full fixed target list is a typed error and leaves the timeline unchanged.
+#[test]
+fn target_capacity() {
+    use resource_timeline::Target;
+
+    let bounds = Bounds::new(0, 10).expect("valid");
+    let mut timeline = Timeline::<Fixed<1>>::depletable_in(0, 5, bounds, 1).expect("valid");
+    timeline.add_target(Target { at: 3, min: 1 }).expect("room");
+    let before = timeline.clone();
+    assert_eq!(
+        timeline.add_target(Target { at: 4, min: 1 }),
+        Err(Error::CapacityExceeded {
+            container: Container::Targets,
+            capacity: 1
+        })
+    );
+    assert_eq!(timeline, before);
+}

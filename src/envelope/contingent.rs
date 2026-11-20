@@ -105,7 +105,8 @@ impl Uncertain {
 /// contingent link of a simple temporal network with uncertainty.
 ///
 /// The envelope covers every combination of a start in `window` and a duration in `duration`,
-/// chosen independently per activity: the start by the dispatcher, the duration by nature.
+/// chosen independently per activity: the start by the dispatcher, the duration by nature. See
+/// [`Envelope::with_contingent`](super::Envelope::with_contingent) for an example.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Contingent<'a> {
     /// The activity, reported back in explanations.

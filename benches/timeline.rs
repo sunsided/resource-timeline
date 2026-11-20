@@ -4,6 +4,7 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use resource_timeline::envelope::{Envelope, Flexible, Precedence};
+use resource_timeline::storage::Fixed;
 use resource_timeline::{ActivityId, Bounds, Demand, Impact, Plan, Timeline, Window};
 
 /// Number of activities in the benchmark timelines.
@@ -69,6 +70,21 @@ fn bench_first_violation(c: &mut Criterion) {
     let timeline = battery();
     c.bench_function("first_violation/500_activities", |b| {
         b.iter(|| black_box(&timeline).first_violation());
+    });
+}
+
+/// Measures `first_violation` on the same battery with fixed-capacity storage, the onboard path.
+fn bench_first_violation_fixed(c: &mut Criterion) {
+    let heap = battery();
+    let bounds = heap.bounds();
+    let mut fixed =
+        Timeline::<Fixed<1_536>>::depletable_in(0, heap.initial(), bounds, 1_536).expect("valid");
+    for &(activity, impact) in heap.impacts() {
+        fixed.add(activity, impact).expect("room");
+    }
+
+    c.bench_function("first_violation/500_activities_fixed", |b| {
+        b.iter(|| black_box(&fixed).first_violation());
     });
 }
 
@@ -155,6 +171,7 @@ criterion_group!(
     benches,
     bench_envelope_precedences,
     bench_first_violation,
+    bench_first_violation_fixed,
     bench_earliest_start,
     bench_earliest_start_rates,
     bench_export

@@ -77,9 +77,12 @@ pub struct Flexible<'a> {
 pub enum Verdict {
     /// Every schedule the windows admit keeps the level within bounds at every tick.
     Safe,
-    /// Some schedule may leave the bounds at the reported tick, but not every schedule leaves
-    /// them at that same tick. This does not imply that a safe schedule exists: every schedule
-    /// may still violate, each at a different tick.
+    /// Some schedule may leave the bounds at the reported tick, but the envelopes do not show
+    /// that every schedule leaves them at that same tick. This does not imply that a safe
+    /// schedule exists: every schedule may still violate, each at a different tick. For
+    /// independent windows, and with precedences between stepwise activities, the envelopes
+    /// are exact and some schedule does leave the bounds there; with precedences between
+    /// activities with rates or uncertain durations it may be a false alarm.
     Possible(EnvelopeViolation),
     /// Every schedule the windows admit leaves the bounds at the reported tick.
     Certain(EnvelopeViolation),
@@ -207,6 +210,34 @@ impl<'a, S: Storage> Envelope<'a, S> {
     /// - The errors of [`with_precedences`](Self::with_precedences) if precedences were
     ///   given before.
     /// - [`Error::Overflow`] if a tick does not fit a [`Tick`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use resource_timeline::envelope::{Anchor, Contingent, Envelope, Uncertain, Verdict};
+    /// use resource_timeline::{ActivityId, Bounds, Impact, Timeline, Window};
+    ///
+    /// // A battery at 30 units; a heater draws 2 units per tick while it runs, 5 to 15 ticks.
+    /// let battery = Timeline::depletable(0, 30, Bounds::new(0, 100)?, 8)?;
+    /// let heat = [Uncertain::Rate { start: Anchor::Start(0), end: Anchor::End(0), per_tick: -2 }];
+    /// let heater = [Contingent {
+    ///     activity: ActivityId(1),
+    ///     window: Window::new(0, 10)?,
+    ///     duration: Window::new(5, 15)?,
+    ///     impacts: &heat,
+    /// }];
+    ///
+    /// let envelope = Envelope::new(&battery, &[])?.with_contingent(&heater)?;
+    /// assert_eq!(envelope.lower_at(25)?, 0); // the longest run has drawn 30
+    /// assert_eq!(envelope.upper_at(25)?, 20); // the shortest run has drawn 10
+    /// assert_eq!(envelope.check()?, Verdict::Safe);
+    ///
+    /// // A 16-tick run would drain the battery: possible, not certain.
+    /// let longer = [Contingent { duration: Window::new(5, 16)?, ..heater[0] }];
+    /// let envelope = Envelope::new(&battery, &[])?.with_contingent(&longer)?;
+    /// assert!(matches!(envelope.check()?, Verdict::Possible(_)));
+    /// # Ok::<(), resource_timeline::Error>(())
+    /// ```
     pub fn with_contingent(mut self, contingent: &'a [Contingent<'a>]) -> Result<Self, Error> {
         for activity in contingent {
             self.validate_contingent(activity)?;
@@ -238,7 +269,8 @@ impl<'a, S: Storage> Envelope<'a, S> {
     /// # Errors
     ///
     /// - [`Error::UnknownActivity`] if a precedence names an activity that is not part of the
-    ///   envelope.
+    ///   envelope. Add contingent activities with [`with_contingent`](Self::with_contingent)
+    ///   first; precedences given earlier are re-applied when activities are added later.
     /// - [`Error::InconsistentPrecedences`] if no schedule satisfies the windows and the
     ///   precedences together.
     /// - [`Error::OutOfMemory`] if the network cannot be allocated.
