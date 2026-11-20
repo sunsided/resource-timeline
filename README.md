@@ -10,20 +10,27 @@ Resource timelines for onboard scheduling: energy, memory, thermal and communica
 - State timelines for modes and visibility windows, with set and require impacts
 - First-violation checks with explanations: the tick, the level or state, and the activities
   responsible
+- End-state level targets (for example the battery reserve at the end of a sol)
 - Incremental add and remove on a sorted change-point profile; level queries at any tick
-- Plans over several timelines: atomic placement and earliest-feasible-start search
+- Profile extraction for display and telemetry: breakpoints, regular samples, and a compact
+  exported profile that answers level queries on its own
+- Plans over several timelines: atomic placement and earliest-feasible-start search, solved in
+  closed form per linear piece when rates are involved
+- Fixed-capacity, allocation-free variants of every timeline and of the plan (`Fixed<N>`,
+  `FixedPlan<T, S, N>`), sharing all logic with the heap variant, with typed capacity errors;
+  the `alloc` feature (default) adds heap storage, envelopes and the greedy scheduler
 - A greedy priority scheduler (example and test vehicle), see `examples/rover.rs`
 - Level envelopes for activities with start windows: safe, possibly violated or certainly
-  violated for every schedule the windows admit
+  violated for every schedule the windows admit, with uncertain durations (claims and rates
+  anchored at the activity end), precedence constraints (window propagation plus an exact
+  min-cut extreme for stepwise activities), and state envelopes for requirements and conflicts
+- Brute-force oracles for every check, compared in property tests
 - Companion to temporal-control, without a dependency on it
 
 ## Status
 
-Pre-release. Milestones 1 to 4 of [docs/design.md](docs/design.md) are implemented except
-end-state level checks and profile extraction; milestone 5 covers flexible starts with fixed
-durations; milestone 6 covers incremental add and remove. Not implemented yet: fixed-capacity
-(allocation-free) storage, impacts with uncertain durations, state timelines in envelopes,
-precedence-aware envelopes, end-state level checks and profile extraction. The API will change.
+Pre-release. Milestones 1 to 6 of [docs/design.md](docs/design.md) are implemented. The API
+will change.
 
 ## License
 

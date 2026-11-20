@@ -1,9 +1,8 @@
 # resource-timeline: design
 
-Status: draft. Milestones 1 to 4 are implemented except end-state level
-checks and profile extraction, milestone 5 for flexible starts with fixed
-durations, and the incremental part of milestone 6. Fixed-capacity storage
-and the items marked *not implemented* are plans.
+Status: draft. Milestones 1 to 6 are implemented, including end-state
+level checks, profile extraction, uncertain durations, precedence-aware and
+state envelopes, and fixed-capacity storage.
 
 ## Purpose
 
@@ -27,9 +26,10 @@ here.
 
 ## Requirements
 
-- `no_std`. `alloc` is used where the size is not known up front (impact
-  lists, contributor lists). A later milestone may add fixed-capacity
-  storage for allocation-free onboard use.
+- `no_std`. With the default `alloc` feature, heap storage is available and
+  used by default; without it the crate needs no allocator and timelines,
+  state timelines and plans use fixed-capacity storage (see "Storage").
+  Envelopes and the greedy scheduler require `alloc`.
 - Integer time. Time is an `i64` tick count; the crate never uses floats.
 - Integer levels. Resource levels are `i64` in a mission-chosen unit
   (for example mWh for energy, KiB for storage, units for claimable
@@ -153,7 +153,7 @@ Validation on insertion:
 | Range bounds | 1 | `min <= level(t) <= max` for every tick from the start. Covers capacity (upper) and reserve (lower). |
 | Claim capacity | 1 | Range bound with `min = 0` on a claimable timeline. |
 | Window containment | 3, 4 | An activity must lie inside an allowed window (comm passes, daylight). Implemented as a state timeline whose value a ground activity sets at each window start and end, plus a `Require` of the activity. |
-| End-state level | 3 | *Not implemented.* The level at a given tick must be at least `x` (for example battery charge at the end of a sol). |
+| End-state level | 3 | `Target { at, min }`: the level at tick `at` must be at least `min` (for example battery charge at the end of a sol). Reported as `Bound::BelowTarget`; part of every check, search and envelope. At the same tick a broken bound wins, among targets the strictest. |
 | State requirements | 4 | `Require` intervals must see the required state value throughout; sets of different values at one tick are a conflict. |
 
 The check stops at the first violation in time order. Ties at the same tick
@@ -166,50 +166,106 @@ relative to its start and a start window `[earliest, latest]` (from the STN).
 With the windows treated as independent, the extreme level at tick `t` is
 the fixed level plus, for each activity, the extreme of its own summed
 profile over the relative times `[t - latest, t - earliest]`. That is the
-exact tightest envelope for independent windows; precedence constraints
-only remove schedules, so it is sound but may be loose for them. The
-verdict is three-valued: `Safe`, `Possible` (some schedule may break a bound
-at the reported tick) and `Certain` (every schedule breaks it there).
-Evaluation ticks are every shape change and the tick before; without rates
-the envelopes are constant in between and the reported tick is the
-earliest; with rates the upper envelope is convex and the lower concave
-between them, so `Safe` remains exact while the reported tick may be later.
+exact tightest envelope for independent windows. The verdict is
+three-valued: `Safe`, `Possible` (some schedule may break a bound at the
+reported tick) and `Certain` (every schedule breaks it there). Evaluation
+ticks are every shape change and the tick before; without rates the
+envelopes are constant in between and the reported tick is the earliest;
+with rates the upper envelope is convex and the lower concave between them,
+so `Safe` remains exact while the reported tick may be later.
 
-Not implemented: precedence-aware envelopes, envelopes over state
-timelines, and envelopes for uncertain durations. On a depletable timeline a
-hold of uncertain length can be modelled as a step pair owned by a start
-part and an end part with their own windows; claims on claimable timelines
-and rates cannot be split that way.
+### Precedences
 
-## Uncertain durations
+`Precedence { before, after, gap }` requires
+`start(after) - start(before) >= gap`. Floyd-Warshall over the start network
+(windows as edges to an origin) tightens every window and yields the
+largest separation of every pair; inconsistent constraints are an error.
+Activities with stepwise impacts (steps and claims) that take part in a
+precedence are evaluated jointly, following Muscettola's envelope
+construction: at tick `t` each impact tick is forced before, forced after or
+pending, and the extreme is the forced sum plus the heaviest closure of the
+pending events under "never later than" (from the separations), found by a
+minimum cut. That is exact for them (the property test checks equality
+with enumeration). Activities with rates or uncertain durations keep their
+own extremes over the tightened windows: sound, never looser than without
+precedences, but a `Possible` may then be a false alarm.
+
+### State envelopes
+
+`StateEnvelope` answers the same question for a state timeline. At a tick,
+each activity offers options ("its latest own set is the one at offset `o`,
+at ticks `[lo, hi]`" or "no set yet"); a requirement is possibly broken if an
+option with another value can be the latest (placed as late as possible,
+everything else at or before it), certainly broken if it covers the tick
+for every start and no option with its value can be the unique latest. The
+requirer's own sets move with its start, so its starts are split into
+pieces by its own offsets. Conflicts are pairs of differing sets whose tick
+ranges meet. "Certain" is per requirement or pair of sets, matching the per
+bound meaning for numeric envelopes. Exact for independent windows; the
+cost grows with the covered ticks (`O(L m^2)`).
+
+## Uncertain durations (implemented)
 
 Durations in an STNU are intervals `[l, u]`; the actual value is learned at
 execution time. Resource checks must be conservative: if the check says
 "safe", every allowed outcome must be safe.
 
-Plan (milestone 5):
+Implemented as `envelope::Contingent`: an activity with a start window, a
+duration range `[d_lo, d_hi]` and `Uncertain` impacts whose ticks are
+anchored at the start (`Anchor::Start(o)`) or at the end
+(`Anchor::End(o)`, the start plus the duration plus `o`). A claim from
+`Start(0)` to `End(0)` holds a resource exactly as long as the activity
+runs, on claimable timelines too; a rate over the same interval runs as
+long as the activity. Intervals may be empty at the shortest duration but
+never inverted.
 
-- An uncertain impact carries an interval for its start and end, for
-  example `Claim { start: [s_lo, s_hi], end: [e_lo, e_hi], amount }`.
-- Worst-case envelopes: compute a lower envelope (the minimum level any
-  outcome can reach at each tick) and an upper envelope (the maximum).
-  For a consumption, the lower envelope applies it as early as possible
-  and the upper envelope as late as possible; for a claim, the lower
-  envelope uses `[s_lo, e_hi)` (longest possible hold) and the upper
-  envelope uses `[s_hi, e_lo)` (shortest, possibly empty).
-- Check the lower envelope against `min` and the upper envelope against
-  `max`. Both are still piecewise-constant (or -linear), so the same sweep
-  applies.
-- This is sound but not complete: the envelopes combine worst cases of
-  independent activities that the temporal constraints might rule out
-  together. Tightening with temporal information (for example from the
-  dispatcher's current time windows) is a later refinement.
-- Rate impacts with uncertain durations take the envelope of the shortest
-  and longest run.
+The extreme contribution at tick `t` is the extreme of the profile
+`g(u, d)` over the box `u in [t - s_hi, t - s_lo]`, `d in [d_lo, d_hi]`. The
+profile is linear on the cells cut by the lines `u = o`, `u = d + o` and
+their integer neighbours, so the extreme lies at a vertex of that
+arrangement; the envelope evaluates exactly those candidates. The result
+equals the pointwise extremes over every start and duration (property
+test). Durations of different activities are independent of each other.
 
-Result type becomes three-valued where needed: *safe*, *violated in every
-outcome*, *possibly violated*. A "possibly violated" result never counts as
-safe.
+Deviation from the original plan, which put separate intervals on each
+impact's start and end: the activity-level duration couples every impact
+of one activity to the same outcome, as an STNU contingent link does, and
+is tighter. A precedence on an uncertain activity's end can be expressed
+soundly with the shortest duration as gap.
+
+## Storage (fixed capacity)
+
+Every timeline, state timeline, violation and plan is generic over a
+storage strategy. `Heap` keeps each container in a `Vec` with fallible
+growth. `Fixed<N>` keeps `N` impacts, sets, requirements, targets and
+contributors and `2 N` change points in inline arrays without `unsafe`
+(unused slots hold a filler value); `FixedPlan<T, S, N>` holds at most `T`
+numeric and `S` state timelines. All algorithms are written once against a
+sealed `Seq` trait. A full container reports
+`Error::CapacityExceeded { container, capacity }` before anything changes,
+so placement stays atomic. Change points are reference-counted, so
+removing an impact never inserts a point and stays infallible at full
+capacity.
+
+## Profile extraction
+
+`Timeline::breakpoints` iterates the ticks where the level line jumps or
+changes slope (with level and slope), `Timeline::samples` evaluates it on a
+regular grid in one pass, and `Timeline::export` produces a `LevelProfile`
+(three `i64` per breakpoint) that answers level queries without the impact
+list. `StateTimeline::values` lists the value changes. All are
+allocation-free on fixed storage.
+
+## Earliest start with rates
+
+Between consecutive candidate starts (where a demand tick meets or passes a
+change tick or target) the order of all ticks is fixed, so the merged level
+line has the same segments for every start, and the level at every segment
+start, at the tick before every segment end and at every target is affine
+in the start. The search sweeps the line at the piece's first start and
+one tick later, reads values and integer coefficients off the pair and
+solves the inequalities in closed form. The per-tick scan is kept as the
+test oracle. `max_checks` counts pieces.
 
 ## Violation explanations
 
@@ -288,33 +344,37 @@ a small common crate only then, per the ecosystem rule for `search-core`.
    resources, step and claim impacts, `[min, max]` check, first violation
    with contributors, impact budget, checked arithmetic, property tests
    against a tick-by-tick oracle.
-2. **Piecewise-linear timelines** (done, except profile extraction for
-   display and telemetry): rate impacts, exact crossing ticks, level
-   queries at any tick.
-3. **Plans and windows** (done, except end-state level checks): a set of
-   timelines checked together, atomic placement, earliest-feasible-start
-   search, a greedy priority scheduler, window containment via state
-   timelines.
+2. **Piecewise-linear timelines** (done): rate impacts, exact crossing
+   ticks, level queries at any tick, profile extraction for display and
+   telemetry.
+3. **Plans and windows** (done): a set of timelines checked together,
+   atomic placement, earliest-feasible-start search (closed form per piece
+   with rates), a greedy priority scheduler, window containment via state
+   timelines, end-state level targets.
 4. **State timelines** (done): discrete state values, `Set`/`Require`
    impacts, mismatch and conflict explanations.
-5. **Uncertain durations** (partly done): envelopes for flexible starts with
-   fixed durations, three-valued results. Interval impacts with uncertain
-   end ticks are not implemented (see "Flexible starts" for the step-pair
-   workaround on depletable timelines).
-6. **Incremental checks and fixed-capacity storage** (incremental part
-   done): add and remove on a sorted change-point profile, `O(n)`
-   re-checks. The allocation-free variant with const-generic capacity is
-   not implemented.
+5. **Uncertain durations** (done): envelopes for flexible starts, for
+   contingent durations anchored at the activity end, with precedences, and
+   over state timelines; three-valued results.
+6. **Incremental checks and fixed-capacity storage** (done): add and remove
+   on a sorted change-point profile, `O(n)` re-checks, and the
+   allocation-free variant with const-generic capacity.
 
 ## Open questions
 
-- Should the earliest-start search with rates restrict candidates per
-  linear piece (solving the affine conditions) instead of checking every
-  tick of the window? Today the window length and `max_checks` bound it.
 - Should `fits` mean "no new violation" rather than "no violation at all"
   on the touched timelines? Today an already violated timeline admits
   nothing.
-
+- Should precedences also couple activities with rates or uncertain
+  durations exactly (for example by discretising starts in a min-cut
+  construction), or is the sound separate treatment enough?
+- Should precedences refer to activity ends, so that "after the actual end
+  of a contingent activity" is expressed exactly rather than with the
+  shortest duration as gap?
+- State envelopes evaluate every covered tick. Should they enumerate only
+  the ticks where the options can change, for long windows?
+- Should `LevelProfile` get a byte encoding (or `serde` behind a feature)
+  for downlink, or is the plain `Copy` breakpoint list enough?
 - Should claimable resources also support fractional claims of a shared
   pool (for example power channels), or is that simply a depletable
   resource with paired steps? Milestone 1 treats both the same way.

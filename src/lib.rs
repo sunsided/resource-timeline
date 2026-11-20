@@ -11,16 +11,24 @@
 //!   [`Impact::Claim`] for a half-open interval and returned afterwards.
 //!
 //! [`Timeline::first_violation`] reports the first tick at which the level leaves its
-//! `[min, max]` [`Bounds`] or misses an end-state [`Target`], with the activities responsible. A [`StateTimeline`] does the same
-//! for discrete states such as instrument modes and comm visibility windows.
+//! `[min, max]` [`Bounds`] or misses an end-state [`Target`], with the activities responsible.
+//! A [`StateTimeline`] does the same for discrete states such as instrument modes and comm
+//! visibility windows. [`Timeline::breakpoints`], [`Timeline::samples`] and
+//! [`Timeline::export`] extract the level line for display and telemetry.
 //!
 //! On top of single timelines:
 //!
 //! - a [`Plan`] holds one timeline per resource, places activities given as [`Demand`]s
-//!   atomically and finds the [earliest start](Plan::earliest_start) at which an activity fits;
+//!   atomically and finds the [earliest start](Plan::earliest_start) at which an activity fits,
+//!   in closed form per linear piece when rates are involved;
 //! - [`greedy::schedule`] places activities in priority order at their earliest feasible start;
 //! - [`envelope::Envelope`] bounds the level over every schedule that start [`Window`]s admit,
-//!   so a flexible schedule can be checked once instead of per dispatch decision.
+//!   including uncertain durations and precedences, so a flexible schedule can be checked once
+//!   instead of per dispatch decision; [`envelope::StateEnvelope`] does the same for states.
+//!
+//! Every timeline and plan is generic over its [`storage`]: heap-allocated by default, or
+//! fixed-capacity and allocation-free ([`FixedTimeline`], [`storage::FixedPlan`]) for onboard
+//! use, with the same algorithms and typed [`Error::CapacityExceeded`] errors.
 //!
 //! This crate is the companion of `temporal-control` but does not depend on it: temporal
 //! controllability does not imply resource safety, so both checks must run independently. Both

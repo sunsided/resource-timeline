@@ -3,6 +3,7 @@
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
+use resource_timeline::envelope::{Envelope, Flexible, Precedence};
 use resource_timeline::{ActivityId, Bounds, Demand, Impact, Plan, Timeline, Window};
 
 /// Number of activities in the benchmark timelines.
@@ -118,8 +119,41 @@ fn bench_export(c: &mut Criterion) {
     });
 }
 
+/// Measures a precedence-coupled envelope check: a chain of 20 claims on a transmitter, each
+/// after the previous one, with overlapping windows.
+fn bench_envelope_precedences(c: &mut Criterion) {
+    let transmitter = Timeline::claimable(0, 1, 8).expect("valid");
+    let hold = [Impact::Claim {
+        start: 0,
+        end: 5,
+        amount: 1,
+    }];
+    let flexible: Vec<Flexible<'_>> = (0..20)
+        .map(|id| Flexible {
+            activity: ActivityId(id),
+            window: Window::new(i64::from(id) * 5, i64::from(id) * 5 + 30).expect("valid"),
+            impacts: &hold,
+        })
+        .collect();
+    let chain: Vec<Precedence> = (1..20)
+        .map(|id| Precedence {
+            before: ActivityId(id - 1),
+            after: ActivityId(id),
+            gap: 5,
+        })
+        .collect();
+    let envelope = Envelope::new(&transmitter, &flexible)
+        .expect("valid")
+        .with_precedences(&chain)
+        .expect("consistent");
+    c.bench_function("envelope/precedence_chain_20", |b| {
+        b.iter(|| black_box(&envelope).check());
+    });
+}
+
 criterion_group!(
     benches,
+    bench_envelope_precedences,
     bench_first_violation,
     bench_earliest_start,
     bench_earliest_start_rates,
