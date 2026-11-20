@@ -6,19 +6,33 @@
 use resource_timeline::{ActivityId, Bound, Impact, Level, Tick, Timeline, Violation};
 
 /// The level of `timeline` at tick `t`, from the closed-form definition.
-fn level_at(timeline: &Timeline, t: Tick) -> i128 {
-    let mut level = i128::from(timeline.initial());
-    for &(_, impact) in timeline.impacts() {
-        match impact {
-            Impact::Step { at, delta } if at <= t => level += i128::from(delta),
-            Impact::Claim { start, end, amount } if start <= t && t < end => {
-                level -= i128::from(amount);
-            }
-            Impact::Step { .. } | Impact::Claim { .. } => {}
-        }
-    }
+pub fn level_at(timeline: &Timeline, t: Tick) -> i128 {
+    timeline
+        .impacts()
+        .iter()
+        .map(|&(_, impact)| effect(impact, t))
+        .sum::<i128>()
+        + i128::from(timeline.initial())
+}
 
-    level
+/// The effect of one impact at tick `t`, from the closed-form definition.
+///
+/// A rate is summed tick by tick rather than multiplied, to stay independent of the
+/// implementation.
+pub fn effect(impact: Impact, t: Tick) -> i128 {
+    match impact {
+        Impact::Step { at, delta } if at <= t => i128::from(delta),
+        Impact::Claim { start, end, amount } if start <= t && t < end => -i128::from(amount),
+        Impact::Rate {
+            start,
+            end,
+            per_tick,
+        } => (start..end)
+            .filter(|&tick| tick < t)
+            .map(|_| i128::from(per_tick))
+            .sum(),
+        Impact::Step { .. } | Impact::Claim { .. } => 0,
+    }
 }
 
 /// The last tick at which any impact changes the level, or the start tick if there is none.
@@ -28,7 +42,7 @@ fn last_change(timeline: &Timeline) -> Tick {
         .iter()
         .map(|&(_, impact)| match impact {
             Impact::Step { at, .. } => at,
-            Impact::Claim { end, .. } => end,
+            Impact::Claim { end, .. } | Impact::Rate { end, .. } => end,
         })
         .fold(timeline.start(), Tick::max)
 }
@@ -86,11 +100,7 @@ fn net_effect(timeline: &Timeline, activity: ActivityId, t: Tick) -> i128 {
             continue;
         }
 
-        effect += match impact {
-            Impact::Step { at, delta } if at <= t => i128::from(delta),
-            Impact::Claim { start, end, amount } if start <= t && t < end => -i128::from(amount),
-            Impact::Step { .. } | Impact::Claim { .. } => 0,
-        };
+        effect += self::effect(impact, t);
     }
 
     effect

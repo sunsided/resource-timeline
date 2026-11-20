@@ -29,7 +29,7 @@ pub enum Error {
         /// The start tick of the timeline.
         start: Tick,
     },
-    /// A claim interval `[start, end)` is empty or inverted.
+    /// A claim or rate interval `[start, end)` is empty or inverted.
     EmptyInterval {
         /// The requested first tick.
         start: Tick,
@@ -41,7 +41,7 @@ pub enum Error {
         /// The rejected amount.
         amount: Level,
     },
-    /// A step impact was added to a claimable timeline, which accepts claims only.
+    /// A step or rate impact was added to a claimable timeline, which accepts claims only.
     KindMismatch,
     /// An intermediate sum, or the level at the first violation, does not fit the number range.
     Overflow,

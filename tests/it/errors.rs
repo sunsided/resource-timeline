@@ -141,3 +141,42 @@ fn overflowing_violation_level() {
         .expect("valid");
     assert_eq!(timeline.first_violation(), Err(Error::Overflow));
 }
+
+/// Rates need a non-empty interval and are rejected on claimable timelines.
+#[test]
+fn invalid_rates() {
+    let mut timeline = battery(4);
+    assert_eq!(
+        timeline.add(
+            A,
+            Impact::Rate {
+                start: 2,
+                end: 2,
+                per_tick: 1
+            }
+        ),
+        Err(Error::EmptyInterval { start: 2, end: 2 })
+    );
+
+    let mut instrument = Timeline::claimable(0, 1, 4).expect("valid");
+    assert_eq!(
+        instrument.add(
+            A,
+            Impact::Rate {
+                start: 0,
+                end: 2,
+                per_tick: -1
+            }
+        ),
+        Err(Error::KindMismatch)
+    );
+}
+
+/// Level queries before the start are rejected.
+#[test]
+fn level_before_start() {
+    assert_eq!(
+        battery(1).level_at(-1),
+        Err(Error::BeforeStart { at: -1, start: 0 })
+    );
+}

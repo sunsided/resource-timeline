@@ -151,3 +151,59 @@ fn large_same_tick_deltas_net_without_overflow() {
 
     assert_eq!(timeline.first_violation(), Ok(None));
 }
+
+/// A rate crossing a bound inside a segment is reported at the exact crossing tick.
+#[test]
+fn rate_crossing_inside_a_segment() {
+    let bounds = Bounds::new(0, 100).expect("valid");
+    let mut battery = Timeline::depletable(0, 10, bounds, 8).expect("valid");
+    battery
+        .add(
+            A,
+            Impact::Rate {
+                start: 2,
+                end: 50,
+                per_tick: -3,
+            },
+        )
+        .expect("valid");
+
+    // 10 - 3 * (t - 2) < 0 first at t = 6, where the level is -2.
+    let expected = Violation {
+        at: 6,
+        level: -2,
+        bound: Bound::BelowMin(0),
+        contributors: vec![A],
+    };
+    assert_eq!(battery.first_violation(), Ok(Some(expected)));
+    assert_eq!(battery.level_at(5), Ok(1));
+}
+
+/// Charging and a parallel drain net to a slow drift that stops at the end of the rates.
+#[test]
+fn opposing_rates_net_and_stop() {
+    let bounds = Bounds::new(0, 20).expect("valid");
+    let mut battery = Timeline::depletable(0, 10, bounds, 8).expect("valid");
+    let charge = Impact::Rate {
+        start: 0,
+        end: 100,
+        per_tick: 2,
+    };
+    let drain = Impact::Rate {
+        start: 0,
+        end: 100,
+        per_tick: -2,
+    };
+    battery.add(A, charge).expect("valid");
+    battery.add(B, drain).expect("valid");
+    assert_eq!(battery.first_violation(), Ok(None));
+
+    battery.remove(B);
+    let violation = battery
+        .first_violation()
+        .expect("no overflow")
+        .expect("overcharged");
+    assert_eq!((violation.at, violation.level), (6, 22));
+    assert_eq!(violation.bound, Bound::AboveMax(20));
+    assert_eq!(battery.level_at(1_000), Ok(210));
+}

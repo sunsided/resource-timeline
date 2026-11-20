@@ -18,10 +18,17 @@ fn owned_impact(start: i64, claims_only: bool) -> impl Strategy<Value = (Activit
             amount,
         }
     });
+    let rate = (start..start + 20, 1_i64..=6, -2_i64..=2).prop_map(|(from, length, per_tick)| {
+        Impact::Rate {
+            start: from,
+            end: from + length,
+            per_tick,
+        }
+    });
     let impact = if claims_only {
         claim.boxed()
     } else {
-        prop_oneof![step, claim].boxed()
+        prop_oneof![3 => step, 3 => claim, 2 => rate].boxed()
     };
 
     (0_u32..4, impact).prop_map(|(id, impact)| (ActivityId(id), impact))
@@ -84,6 +91,34 @@ proptest! {
             .expect("valid");
         let reordered = with_impacts(empty, &shuffled);
         prop_assert_eq!(timeline.first_violation(), reordered.first_violation());
+    }
+
+    /// Removing activities leaves the same timeline as building it from the survivors.
+    #[test]
+    fn remove_matches_rebuild(timeline in depletable(), removed in prop::collection::vec(0_u32..4, 0..4)) {
+        let mut incremental = timeline.clone();
+        for &id in &removed {
+            incremental.remove(ActivityId(id));
+        }
+
+        let survivors: Vec<_> = timeline
+            .impacts()
+            .iter()
+            .copied()
+            .filter(|(activity, _)| !removed.contains(&activity.0))
+            .collect();
+        let empty = Timeline::depletable(timeline.start(), timeline.initial(), timeline.bounds(), BUDGET)
+            .expect("valid");
+        let rebuilt = with_impacts(empty, &survivors);
+        prop_assert_eq!(&incremental, &rebuilt);
+        prop_assert_eq!(incremental.first_violation().expect("no overflow"), oracle::first_violation(&rebuilt));
+    }
+
+    /// Level queries agree with the closed-form definition at every tick.
+    #[test]
+    fn level_at_matches_oracle(timeline in depletable(), offset in 0_i64..30) {
+        let t = timeline.start() + offset;
+        prop_assert_eq!(i128::from(timeline.level_at(t).expect("small")), oracle::level_at(&timeline, t));
     }
 }
 
