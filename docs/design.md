@@ -176,19 +176,36 @@ so `Safe` remains exact while the reported tick may be later.
 
 ### Precedences
 
-`Precedence { before, after, gap }` requires
-`start(after) - start(before) >= gap`. Floyd-Warshall over the start network
-(windows as edges to an origin) tightens every window and yields the
-largest separation of every pair; inconsistent constraints are an error.
-Activities with stepwise impacts (steps and claims) that take part in a
-precedence are evaluated jointly, following Muscettola's envelope
-construction: at tick `t` each impact tick is forced before, forced after or
-pending, and the extreme is the forced sum plus the heaviest closure of the
-pending events under "never later than" (from the separations), found by a
-minimum cut. That is exact for them (the property test checks equality
-with enumeration). Activities with rates or uncertain durations keep their
-own extremes over the tightened windows: sound, never looser than without
-precedences, but a `Possible` may then be a false alarm.
+`Precedence { before, from, after, to, gap }` requires
+`time(after, to) - time(before, from) >= gap`, where each endpoint is the
+start or the end (start-start, start-end, end-start, end-end). The end of a
+contingent activity is its start plus its uncertain duration, the end of a
+flexible one the start plus the last tick of its impacts. Floyd-Warshall
+over the network of starts and contingent ends (windows as edges to an
+origin, durations as edges between start and end) tightens every window
+and duration range and yields the largest separation of every pair of time
+points; inconsistent constraints are an error.
+
+The linked activities get a joint extreme:
+
+- all stepwise (steps and claims): Muscettola's construction, forced events
+  plus the heaviest closure of the pending ones under "never later than",
+  by a minimum cut. Exact, independent of the window lengths.
+- with rates or uncertain durations: every impact is separable in its time
+  points (a step an indicator, a claim a difference of two indicators, a
+  rate a difference of two clamped ramps), so the extreme is the maximum of
+  a separable function under difference constraints. A layered graph with
+  one node per domain value (Ishikawa) turns it into one minimum cut (Dinic),
+  exact without an LP. Every tick a coupled time point can take becomes an
+  evaluation tick.
+- the layered graph grows with the windows, so it is built only up to a node
+  budget (`with_cut_budget`, default 4096). Above it the activities with
+  rates or durations keep separate extremes over their tightened ranges:
+  sound, never looser than without precedences, but a `Possible` may be a
+  false alarm. This is the remaining gap.
+
+The properties check equality with enumeration of the respecting schedules
+for every endpoint combination, with rates and with contingent ends.
 
 ### State envelopes
 
@@ -230,8 +247,7 @@ test). Durations of different activities are independent of each other.
 Deviation from the original plan, which put separate intervals on each
 impact's start and end: the activity-level duration couples every impact
 of one activity to the same outcome, as an STNU contingent link does, and
-is tighter. A precedence on an uncertain activity's end can be expressed
-soundly with the shortest duration as gap.
+is tighter. Precedences may refer to the uncertain end directly.
 
 ## Storage (fixed capacity)
 
@@ -365,14 +381,8 @@ a small common crate only then, per the ecosystem rule for `search-core`.
 - Should `fits` mean "no new violation" rather than "no violation at all"
   on the touched timelines? Today an already violated timeline admits
   nothing.
-- Should precedences also couple activities with rates or uncertain
-  durations exactly (for example by discretising starts in a min-cut
-  construction), or is the sound separate treatment enough?
-- Should precedences refer to activity ends, so that "after the actual end
-  of a contingent activity" is expressed exactly rather than with the
-  shortest duration as gap?
-- State envelopes evaluate every covered tick. Should they enumerate only
-  the ticks where the options can change, for long windows?
+- Is the default cut budget of 4096 nodes right, and should the fallback
+  above it rather report an error than a sound but loose envelope?
 - Should `LevelProfile` get a byte encoding (or `serde` behind a feature)
   for downlink, or is the plain `Copy` breakpoint list enough?
 - Should claimable resources also support fractional claims of a shared

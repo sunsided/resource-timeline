@@ -76,6 +76,44 @@ impl Member<'_> {
         }
     }
 
+    /// The tick after the start at which a member with fixed impacts ends: the last tick of
+    /// its impacts, or the start itself without impacts (never before the start).
+    pub(crate) fn span(&self) -> Tick {
+        match self.shape {
+            Shape::Fixed(impacts) => impacts.iter().map(Impact::last_tick).fold(0, Tick::max),
+            Shape::Uncertain { .. } => 0,
+        }
+    }
+
+    /// Every impact as an anchored impact: fixed impacts are anchored at the start.
+    pub(crate) fn anchored(&self) -> impl Iterator<Item = Uncertain> + '_ {
+        let (fixed, uncertain): (&[Impact], &[Uncertain]) = match self.shape {
+            Shape::Fixed(impacts) => (impacts, &[]),
+            Shape::Uncertain { impacts, .. } => (&[], impacts),
+        };
+        let fixed = fixed.iter().map(|&impact| match impact {
+            Impact::Step { at, delta } => Uncertain::Step {
+                at: Anchor::Start(at),
+                delta,
+            },
+            Impact::Claim { start, end, amount } => Uncertain::Claim {
+                start: Anchor::Start(start),
+                end: Anchor::Start(end),
+                amount,
+            },
+            Impact::Rate {
+                start,
+                end,
+                per_tick,
+            } => Uncertain::Rate {
+                start: Anchor::Start(start),
+                end: Anchor::Start(end),
+                per_tick,
+            },
+        });
+        fixed.chain(uncertain.iter().copied())
+    }
+
     /// The anchors of every impact.
     pub(crate) fn anchors(&self) -> impl Iterator<Item = Anchor> + '_ {
         let (fixed, uncertain): (&[Impact], &[Uncertain]) = match self.shape {
@@ -91,10 +129,9 @@ impl Member<'_> {
         fixed.chain(uncertain.iter().flat_map(Uncertain::anchors))
     }
 
-    /// The ticks, relative to the start, at which the profile can change for some duration:
-    /// start offsets, and end offsets at the shortest and the longest duration.
-    pub(crate) fn offsets(&self) -> impl Iterator<Item = i128> + '_ {
-        let duration = self.duration();
+    /// The ticks, relative to the start, at which the profile can change for some duration in
+    /// `duration`: start offsets, and end offsets at the shortest and the longest duration.
+    pub(crate) fn offsets(&self, duration: Window) -> impl Iterator<Item = i128> + '_ {
         self.anchors()
             .flat_map(move |anchor| match anchor {
                 Anchor::Start(offset) => [Some(i128::from(offset)), None],
@@ -106,7 +143,8 @@ impl Member<'_> {
             .flatten()
     }
 
-    /// The extreme contribution at tick `t` over all starts in `window` and all durations.
+    /// The extreme contribution at tick `t` over all starts in `window` and all durations in
+    /// `duration`.
     ///
     /// # Errors
     ///
@@ -114,17 +152,19 @@ impl Member<'_> {
     pub(crate) fn extreme_at(
         &self,
         window: Window,
+        duration: Window,
         t: Tick,
         extreme: Extreme,
     ) -> Result<i128, Error> {
         let first = i128::from(t) - i128::from(window.latest());
         let last = i128::from(t) - i128::from(window.earliest());
-        let duration = self.duration();
         let (d_lo, d_hi) = (
             i128::from(duration.earliest()),
             i128::from(duration.latest()),
         );
-        let inner = self.offsets().flat_map(|offset| [offset - 1, offset]);
+        let inner = self
+            .offsets(duration)
+            .flat_map(|offset| [offset - 1, offset]);
 
         let mut best: Option<i128> = None;
         for u in [first, last].into_iter().chain(inner) {

@@ -152,11 +152,7 @@ fn bench_envelope_precedences(c: &mut Criterion) {
         })
         .collect();
     let chain: Vec<Precedence> = (1..20)
-        .map(|id| Precedence {
-            before: ActivityId(id - 1),
-            after: ActivityId(id),
-            gap: 5,
-        })
+        .map(|id| Precedence::starts(ActivityId(id - 1), ActivityId(id), 5))
         .collect();
     let envelope = Envelope::new(&transmitter, &flexible)
         .expect("valid")

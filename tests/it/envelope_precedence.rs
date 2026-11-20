@@ -1,21 +1,43 @@
 //! Precedence-aware envelopes against enumeration of the schedules that respect them.
 
 use proptest::prelude::*;
-use resource_timeline::envelope::{Envelope, Flexible, Precedence, Verdict};
+use resource_timeline::envelope::{Endpoint, Envelope, Flexible, Precedence, Verdict};
 use resource_timeline::{ActivityId, Bounds, Error, Impact, Timeline, Window};
 
 use crate::envelope::{Generated, flexible, horizon, out_of_bounds, scenario};
 use crate::oracle;
 
-/// Up to three precedences between the generated activities (ids 10 to 12), gaps in [-2, 6].
+/// Up to three precedences between the generated activities (ids 10 to 12) between any
+/// endpoints, gaps in [-2, 6].
 fn precedences(count: usize) -> impl Strategy<Value = Vec<Precedence>> {
     let id = 10_u32..10 + u32::try_from(count).expect("small");
-    let precedence = (id.clone(), id, -2_i64..=6).prop_map(|(before, after, gap)| Precedence {
-        before: ActivityId(before),
-        after: ActivityId(after),
-        gap,
-    });
+    let endpoint = prop_oneof![Just(Endpoint::Start), Just(Endpoint::End)];
+    let precedence = (id.clone(), endpoint.clone(), id, endpoint, -2_i64..=6).prop_map(
+        |(before, from, after, to, gap)| Precedence {
+            before: ActivityId(before),
+            from,
+            after: ActivityId(after),
+            to,
+            gap,
+        },
+    );
     prop::collection::vec(precedence, 0..4)
+}
+
+/// The tick of `endpoint` of a flexible activity starting at `start`: its end is the last
+/// tick of its impacts.
+fn time_of(activity: &Flexible<'_>, start: i64, endpoint: Endpoint) -> i64 {
+    match endpoint {
+        Endpoint::Start => start,
+        Endpoint::End => {
+            start
+                + activity
+                    .impacts
+                    .iter()
+                    .map(Impact::last_tick)
+                    .fold(0, i64::max)
+        }
+    }
 }
 
 /// A scenario with precedences between its flexible activities.
@@ -47,19 +69,19 @@ fn schedules(
             .collect();
     }
 
-    let start_of = |starts: &[i64], id: ActivityId| {
+    let at = |starts: &[i64], id: ActivityId, endpoint: Endpoint| {
         let index = flexible
             .iter()
             .position(|a| a.activity == id)
             .expect("known");
-        starts[index]
+        time_of(&flexible[index], starts[index], endpoint)
     };
     combos
         .into_iter()
         .filter(|starts| {
             precedences
                 .iter()
-                .all(|p| start_of(starts, p.after) - start_of(starts, p.before) >= p.gap)
+                .all(|p| at(starts, p.after, p.to) - at(starts, p.before, p.from) >= p.gap)
         })
         .map(|starts| {
             let mut concrete = timeline.clone();
@@ -76,8 +98,8 @@ fn schedules(
 }
 
 proptest! {
-    /// Sound for every respecting schedule, never looser than the independent envelope, and
-    /// exact when no activity has a rate.
+    /// Exact for every respecting schedule (the coupled cut covers rates), and never looser
+    /// than the independent envelope.
     #[test]
     fn envelopes_are_sound_and_tighter((timeline, generated, precedences) in ordered()) {
         let flexible = flexible(&generated);
@@ -92,8 +114,6 @@ proptest! {
             result => result.expect("valid"),
         };
         prop_assert!(!all.is_empty());
-
-        let rates = generated.iter().any(|(_, _, impacts)| impacts.iter().any(Impact::is_rate));
         for t in timeline.start()..=horizon(&timeline, &generated) {
             let levels = all.iter().map(|concrete| oracle::level_at(concrete, t));
             let lowest = levels.clone().min().expect("schedules");
@@ -102,9 +122,7 @@ proptest! {
             prop_assert!(lower <= lowest && highest <= upper, "unsound at {}", t);
             prop_assert!(i128::from(independent.lower_at(t).expect("small")) <= lower, "looser at {}", t);
             prop_assert!(upper <= i128::from(independent.upper_at(t).expect("small")), "looser at {}", t);
-            if !rates {
-                prop_assert_eq!((lower, upper), (lowest, highest), "not exact at {}", t);
-            }
+            prop_assert_eq!((lower, upper), (lowest, highest), "not exact at {}", t);
         }
     }
 
@@ -128,13 +146,7 @@ proptest! {
                 }
             }
             Verdict::Possible(violation) => {
-                // Exact (so the violation is real) only when every activity is stepwise; with
-                // rates the separate extremes of precedence-linked activities may add up to a
-                // level no single schedule reaches.
-                let rates = generated.iter().any(|(_, _, impacts)| impacts.iter().any(Impact::is_rate));
-                if !rates {
-                    prop_assert!(all.iter().any(|concrete| out_of_bounds(concrete, violation.at)));
-                }
+                prop_assert!(all.iter().any(|concrete| out_of_bounds(concrete, violation.at)));
             }
         }
     }
@@ -168,11 +180,7 @@ fn precedence_is_strictly_tighter() {
     assert_eq!(independent.lower_at(5), Ok(-2));
 
     // The second drain waits 10 ticks for the first: at tick 5 at most one has happened.
-    let precedence = Precedence {
-        before: ActivityId(1),
-        after: ActivityId(2),
-        gap: 10,
-    };
+    let precedence = Precedence::starts(ActivityId(1), ActivityId(2), 10);
     let ordered = independent.with_precedences(&[precedence]).expect("valid");
     assert_eq!(ordered.lower_at(5), Ok(4));
     assert_eq!(ordered.window(ActivityId(1)), Window::new(0, 10).ok());
@@ -195,11 +203,7 @@ fn precedence_errors() {
         impacts: &hold,
     }];
     let envelope = Envelope::new(&timeline, &flexible).expect("valid");
-    let unknown = Precedence {
-        before: ActivityId(1),
-        after: ActivityId(9),
-        gap: 0,
-    };
+    let unknown = Precedence::starts(ActivityId(1), ActivityId(9), 0);
     assert_eq!(
         envelope.clone().with_precedences(&[unknown]).err(),
         Some(Error::UnknownActivity {
@@ -207,13 +211,56 @@ fn precedence_errors() {
         })
     );
 
-    let itself = Precedence {
-        before: ActivityId(1),
-        after: ActivityId(1),
-        gap: 1,
-    };
+    let itself = Precedence::starts(ActivityId(1), ActivityId(1), 1);
     assert_eq!(
         envelope.with_precedences(&[itself]).err(),
         Some(Error::InconsistentPrecedences)
     );
+}
+
+/// Above the cut budget, rate activities linked by precedences fall back to separate extremes:
+/// still sound, never tighter than exact, and here strictly looser. A drain and a charge of the
+/// same rate that must start together cancel out exactly.
+#[test]
+fn budget_fallback_stays_sound() {
+    let bounds = Bounds::new(0, 100).expect("valid");
+    let battery = Timeline::depletable(0, 20, bounds, 8).expect("valid");
+    let rate = |per_tick| {
+        [Impact::Rate {
+            start: 0,
+            end: 5,
+            per_tick,
+        }]
+    };
+    let (drain, charge) = (rate(-2), rate(2));
+    let window = Window::new(0, 10).expect("valid");
+    let flexible = [
+        Flexible {
+            activity: ActivityId(1),
+            window,
+            impacts: &drain,
+        },
+        Flexible {
+            activity: ActivityId(2),
+            window,
+            impacts: &charge,
+        },
+    ];
+    let together = [
+        Precedence::starts(ActivityId(1), ActivityId(2), 0),
+        Precedence::starts(ActivityId(2), ActivityId(1), 0),
+    ];
+    let exact = Envelope::new(&battery, &flexible)
+        .expect("valid")
+        .with_precedences(&together)
+        .expect("valid");
+    let fallback = exact.clone().with_cut_budget(2).expect("valid");
+    for t in 0..20 {
+        assert_eq!(exact.lower_at(t), Ok(20));
+        assert_eq!(exact.upper_at(t), Ok(20));
+        assert!(fallback.lower_at(t).expect("small") <= 20);
+        assert!(fallback.upper_at(t).expect("small") >= 20);
+    }
+
+    assert_eq!(fallback.lower_at(7), Ok(10));
 }

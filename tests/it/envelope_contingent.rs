@@ -2,7 +2,9 @@
 //! every duration.
 
 use proptest::prelude::*;
-use resource_timeline::envelope::{Anchor, Contingent, Envelope, Precedence, Uncertain, Verdict};
+use resource_timeline::envelope::{
+    Anchor, Contingent, Endpoint, Envelope, Precedence, Uncertain, Verdict,
+};
 use resource_timeline::{ActivityId, Bounds, Error, Impact, Tick, Timeline, Window};
 
 use crate::envelope::out_of_bounds;
@@ -89,17 +91,17 @@ fn outcomes(timeline: &Timeline, contingent: &[Contingent<'_>]) -> Vec<Timeline>
         .collect()
 }
 
-/// Every concrete timeline with the starts that produced it.
+/// Every concrete timeline with the starts and durations that produced it.
 fn outcomes_with_starts(
     timeline: &Timeline,
     contingent: &[Contingent<'_>],
-) -> Vec<(Vec<Tick>, Timeline)> {
+) -> Vec<(Vec<(Tick, Tick)>, Timeline)> {
     let mut concrete = vec![(Vec::new(), timeline.clone())];
     for activity in contingent {
         let (window, duration) = (activity.window, activity.duration);
         concrete = concrete
             .into_iter()
-            .flat_map(|(starts, base)| {
+            .flat_map(|(chosen, base)| {
                 let pairs = (window.earliest()..=window.latest()).flat_map(move |start| {
                     (duration.earliest()..=duration.latest()).map(move |length| (start, length))
                 });
@@ -113,9 +115,9 @@ fn outcomes_with_starts(
                         }
                     }
 
-                    let mut starts = starts.clone();
-                    starts.push(start);
-                    (starts, next)
+                    let mut chosen = chosen.clone();
+                    chosen.push((start, length));
+                    (chosen, next)
                 })
             })
             .collect();
@@ -179,31 +181,44 @@ proptest! {
 }
 
 proptest! {
-    /// With a precedence between two contingent activities the envelopes stay sound for every
-    /// start and duration that respects it, and never get looser.
+    /// With a precedence between any endpoints of the first and the last contingent activity
+    /// (their ends included), the envelopes equal the extremes over every start and duration
+    /// that respects it, and never get looser.
     #[test]
-    fn precedences_stay_sound((timeline, generated) in scenario(), gap in -2_i64..5) {
+    fn precedences_are_exact(
+        (timeline, generated) in scenario(),
+        gap in -2_i64..5,
+        from in prop_oneof![Just(Endpoint::Start), Just(Endpoint::End)],
+        to in prop_oneof![Just(Endpoint::Start), Just(Endpoint::End)],
+    ) {
         let contingent = contingent(&generated);
         let Ok(independent) = Envelope::new(&timeline, &[]).expect("valid").with_contingent(&contingent) else {
             return Ok(());
         };
         let last = ActivityId(9 + u32::try_from(contingent.len()).expect("small"));
-        let precedence = Precedence { before: ActivityId(10), after: last, gap };
-        let ordered = match independent.clone().with_precedences(&[precedence]) {
-            Err(Error::InconsistentPrecedences) => return Ok(()),
-            result => result.expect("valid"),
+        let precedence = Precedence { before: ActivityId(10), from, after: last, to, gap };
+        let at = |(start, length): (Tick, Tick), endpoint| match endpoint {
+            Endpoint::Start => start,
+            Endpoint::End => start + length,
         };
         let respecting: Vec<_> = outcomes_with_starts(&timeline, &contingent)
             .into_iter()
-            .filter(|(starts, _)| starts[starts.len() - 1] - starts[0] >= gap)
+            .filter(|(chosen, _)| at(chosen[chosen.len() - 1], to) - at(chosen[0], from) >= gap)
             .map(|(_, concrete)| concrete)
             .collect();
+        let ordered = match independent.clone().with_precedences(&[precedence]) {
+            Err(Error::InconsistentPrecedences) => {
+                prop_assert!(respecting.is_empty());
+                return Ok(());
+            }
+            result => result.expect("valid"),
+        };
         prop_assert!(!respecting.is_empty());
         for t in timeline.start()..=HORIZON {
             let levels = respecting.iter().map(|concrete| oracle::level_at(concrete, t));
             let (lower, upper) = (ordered.lower_at(t).expect("small"), ordered.upper_at(t).expect("small"));
-            prop_assert!(i128::from(lower) <= levels.clone().min().expect("outcomes"));
-            prop_assert!(i128::from(upper) >= levels.max().expect("outcomes"));
+            prop_assert_eq!(i128::from(lower), levels.clone().min().expect("outcomes"), "lower at {}", t);
+            prop_assert_eq!(i128::from(upper), levels.max().expect("outcomes"), "upper at {}", t);
             prop_assert!(lower >= independent.lower_at(t).expect("small"));
             prop_assert!(upper <= independent.upper_at(t).expect("small"));
         }

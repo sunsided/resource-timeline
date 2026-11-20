@@ -17,9 +17,10 @@
 //!   start window and a duration range, and its impacts are [`Uncertain`]: anchored at the
 //!   start or at the (uncertain) end. Claims held until the end on a claimable timeline and
 //!   rates that run until the end are covered for every start and every duration, exactly.
-//! - **Precedences** ([`Envelope::with_precedences`]): [`Precedence`] constraints between
-//!   starts tighten the windows by propagation and couple stepwise activities through a
-//!   maximum-weight closure, which is exact for them; see the `precedence` module.
+//! - **Precedences** ([`Envelope::with_precedences`]): [`Precedence`] constraints between the
+//!   starts and ends of activities tighten windows and durations by propagation and couple the
+//!   linked activities exactly (a maximum-weight closure for stepwise ones, a discretised
+//!   minimum cut with rates or uncertain durations); see the `precedence` module.
 //! - **States** ([`StateEnvelope`]): the same question for a state timeline, with
 //!   requirements and conflicting sets instead of bounds; exact for independent windows.
 //!
@@ -46,6 +47,7 @@
 
 mod closure;
 mod contingent;
+mod cut;
 mod member;
 mod precedence;
 mod state;
@@ -55,10 +57,13 @@ use alloc::vec::Vec;
 pub use contingent::{Anchor, Contingent, Uncertain};
 use member::{Extreme, Member, Shape};
 use precedence::Network;
-pub use precedence::Precedence;
+pub use precedence::{Endpoint, Precedence};
 pub use state::{FlexibleState, StateEnvelope, StateEnvelopeViolation, StateVerdict};
 
 use crate::storage::{Heap, Storage};
+
+/// The default node budget of the exact coupled cut, see [`Envelope::with_cut_budget`].
+const DEFAULT_CUT_BUDGET: usize = 4096;
 use crate::{ActivityId, Bound, Error, Impact, Level, Tick, Timeline, Window};
 
 /// An activity whose start is only known to lie in a window.
@@ -79,10 +84,10 @@ pub enum Verdict {
     Safe,
     /// Some schedule may leave the bounds at the reported tick, but the envelopes do not show
     /// that every schedule leaves them at that same tick. This does not imply that a safe
-    /// schedule exists: every schedule may still violate, each at a different tick. For
-    /// independent windows, and with precedences between stepwise activities, the envelopes
-    /// are exact and some schedule does leave the bounds there; with precedences between
-    /// activities with rates or uncertain durations it may be a false alarm.
+    /// schedule exists: every schedule may still violate, each at a different tick. The
+    /// envelopes are exact, so some schedule does leave the bounds there, unless precedences
+    /// link activities with rates or uncertain durations whose domains exceed the cut budget
+    /// ([`Envelope::with_cut_budget`]); then it may be a false alarm.
     Possible(EnvelopeViolation),
     /// Every schedule the windows admit leaves the bounds at the reported tick.
     Certain(EnvelopeViolation),
@@ -149,6 +154,11 @@ pub struct Envelope<'a, S: Storage = Heap> {
     members: Vec<Member<'a>>,
     /// The start window of each member, tightened by the precedences.
     windows: Vec<Window>,
+    /// The duration range of each member, tightened by the precedences (`[0, 0]` for fixed
+    /// impacts).
+    durations: Vec<Window>,
+    /// The largest graph the exact coupled cut may build, in nodes.
+    cut_budget: usize,
     /// The precedences between members, as given.
     precedences: Vec<Precedence>,
     /// The temporal network of the precedences, `None` without precedences.
@@ -182,6 +192,8 @@ impl<'a, S: Storage> Envelope<'a, S> {
             timeline,
             members: Vec::new(),
             windows: Vec::new(),
+            durations: Vec::new(),
+            cut_budget: DEFAULT_CUT_BUDGET,
             precedences: Vec::new(),
             network: None,
         };
@@ -257,14 +269,16 @@ impl<'a, S: Storage> Envelope<'a, S> {
 
     /// Restricts the schedules to those that respect `precedences` between the activities.
     ///
-    /// The windows are tightened by propagation, and activities with stepwise impacts (steps
-    /// and claims) that take part in a precedence get a joint, exact extreme; see the
-    /// `precedence` module. Activities with rates or uncertain durations keep separate
-    /// extremes over their tightened windows. The envelopes are never looser than without
-    /// precedences, and still sound for every schedule that satisfies them. They are exact if
-    /// every activity is stepwise; otherwise the separate extremes may add up to a level no
-    /// single schedule reaches, so [`Verdict::Possible`] may then be a false alarm (never
-    /// [`Verdict::Safe`] a false all-clear).
+    /// Start windows and contingent duration ranges are tightened by propagation, and the
+    /// activities that take part in a precedence get a joint, exact extreme: by
+    /// maximum-weight closure if all are stepwise, by a discretised minimum cut if some have
+    /// rates or uncertain durations and their domains fit the cut budget; see the `precedence`
+    /// module. Above the budget the latter keep separate extremes over their tightened ranges,
+    /// which may add up to a level no single schedule reaches, so [`Verdict::Possible`] may
+    /// then be a false alarm (never [`Verdict::Safe`] a false all-clear). The envelopes are
+    /// never looser than without precedences. With the cut, every tick a coupled time point
+    /// can take becomes an evaluation tick, so [`check`](Self::check) costs grow with those
+    /// windows.
     ///
     /// # Errors
     ///
@@ -295,11 +309,11 @@ impl<'a, S: Storage> Envelope<'a, S> {
     /// assert!(matches!(independent.check()?, Verdict::Possible(_)));
     ///
     /// // "2 starts after 1 has ended" rules every overlap out.
-    /// let ordered = independent.with_precedences(&[Precedence {
-    ///     before: ActivityId(1),
-    ///     after: ActivityId(2),
-    ///     gap: 10,
-    /// }])?;
+    /// let ordered = independent.with_precedences(&[Precedence::after_end(
+    ///     ActivityId(1),
+    ///     ActivityId(2),
+    ///     0,
+    /// )])?;
     /// assert_eq!(ordered.check()?, Verdict::Safe);
     /// assert_eq!(ordered.window(ActivityId(1)), Some(Window::new(0, 10)?));
     /// # Ok::<(), resource_timeline::Error>(())
@@ -311,6 +325,30 @@ impl<'a, S: Storage> Envelope<'a, S> {
         self.precedences.extend_from_slice(precedences);
         self.couple()?;
         Ok(self)
+    }
+
+    /// Sets the largest graph, in nodes, that the exact coupled extreme of precedence-linked
+    /// activities with rates or uncertain durations may build per tick (one node per tick of
+    /// each coupled start and end domain). Above it those activities get separate, sound
+    /// extremes. The default is 4096.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`with_precedences`](Self::with_precedences), re-run with the new budget.
+    pub fn with_cut_budget(mut self, nodes: usize) -> Result<Self, Error> {
+        self.cut_budget = nodes;
+        self.couple()?;
+        Ok(self)
+    }
+
+    /// The duration range of the first activity with id `activity`, tightened by the
+    /// precedences (`[0, 0]` for a flexible activity), or `None` if there is no such activity.
+    #[must_use]
+    pub fn duration(&self, activity: ActivityId) -> Option<Window> {
+        self.members
+            .iter()
+            .position(|member| member.activity == activity)
+            .map(|index| self.durations[index])
     }
 
     /// The start window of the first activity with id `activity`, tightened by the
@@ -389,8 +427,12 @@ impl<'a, S: Storage> Envelope<'a, S> {
         self.windows
             .try_reserve(extra)
             .map_err(|_| Error::OutOfMemory)?;
+        self.durations
+            .try_reserve(extra)
+            .map_err(|_| Error::OutOfMemory)?;
         for member in members {
             self.windows.push(member.window);
+            self.durations.push(member.duration());
             self.members.push(member);
         }
 
@@ -403,8 +445,10 @@ impl<'a, S: Storage> Envelope<'a, S> {
             return Ok(());
         }
 
-        let (windows, network) = Network::propagate(&self.members, &self.precedences)?;
-        self.windows = windows;
+        let (tightened, network) =
+            Network::propagate(&self.members, &self.precedences, self.cut_budget)?;
+        self.windows = tightened.windows;
+        self.durations = tightened.durations;
         self.network = Some(network);
         Ok(())
     }
@@ -459,12 +503,13 @@ impl<'a, S: Storage> Envelope<'a, S> {
                 continue;
             }
 
-            let contribution = member.extreme_at(self.windows[index], t, extreme)?;
+            let (window, duration) = (self.windows[index], self.durations[index]);
+            let contribution = member.extreme_at(window, duration, t, extreme)?;
             level = level.checked_add(contribution).ok_or(Error::Overflow)?;
         }
 
         if let Some(network) = &self.network {
-            let coupled = network.coupled_extreme(&self.members, &self.windows, t, extreme)?;
+            let coupled = network.coupled_extreme(&self.members, t, extreme)?;
             level = level.checked_add(coupled).ok_or(Error::Overflow)?;
         }
 
@@ -494,10 +539,22 @@ impl<'a, S: Storage> Envelope<'a, S> {
             push(i128::from(tick))?;
         }
 
-        for (member, window) in self.members.iter().zip(&self.windows) {
-            for offset in member.offsets() {
+        for ((member, window), duration) in
+            self.members.iter().zip(&self.windows).zip(&self.durations)
+        {
+            for offset in member.offsets(*duration) {
                 for start in [window.earliest(), window.latest()] {
                     push(offset + i128::from(start))?;
+                }
+            }
+        }
+
+        // The exact coupled cut over rates or durations may change shape at any tick a coupled
+        // time point can take; its graph is within the node budget, so are these ranges.
+        if let Some(network) = &self.network {
+            for (lo, hi) in network.dense_ranges(&self.members) {
+                for tick in lo..=hi {
+                    push(tick)?;
                 }
             }
         }
@@ -521,8 +578,9 @@ impl<'a, S: Storage> Envelope<'a, S> {
             .try_reserve_exact(fixed.len() + self.members.len())
             .map_err(|_| Error::OutOfMemory)?;
         contributors.extend_from_slice(&fixed);
-        for (member, window) in self.members.iter().zip(&self.windows) {
-            if bound.is_pushed_by(member.extreme_at(*window, t, towards)?) {
+        let ranges = self.members.iter().zip(&self.windows).zip(&self.durations);
+        for ((member, window), duration) in ranges {
+            if bound.is_pushed_by(member.extreme_at(*window, *duration, t, towards)?) {
                 contributors.push(member.activity);
             }
         }
