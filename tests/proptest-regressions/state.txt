@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 7800d2c8f7846887fc3afb875e581f502dbc4e2439dba521694461db1d02997e # shrinks to timeline = StateTimeline { start: 0, initial: 0, budget: 64, impacts: [(ActivityId(1), Require { start: 0, end: 1, value: 2 }), (ActivityId(1), Require { start: 0, end: 1, value: 1 })], sets: [], requires: [Requirement { activity: ActivityId(1), start: 0, end: 1, value: 2 }, Requirement { activity: ActivityId(1), start: 0, end: 1, value: 1 }] }

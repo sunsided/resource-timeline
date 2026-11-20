@@ -47,6 +47,21 @@ pub enum Error {
     Overflow,
     /// Memory for the impact list or the check could not be allocated.
     OutOfMemory,
+    /// A start window has `earliest > latest`.
+    InvalidWindow {
+        /// The requested earliest start.
+        earliest: Tick,
+        /// The requested latest start.
+        latest: Tick,
+    },
+    /// A demand names a timeline that is not part of the plan.
+    UnknownResource,
+    /// A search ran out of its caller-chosen number of candidate checks before it found an
+    /// answer.
+    SearchExhausted {
+        /// The number of candidate checks the search was allowed.
+        checks: usize,
+    },
 }
 
 impl fmt::Display for Error {
@@ -64,6 +79,13 @@ impl fmt::Display for Error {
             Self::KindMismatch => f.write_str("claimable timelines accept claims only"),
             Self::Overflow => f.write_str("arithmetic overflow"),
             Self::OutOfMemory => f.write_str("allocation failed"),
+            Self::InvalidWindow { earliest, latest } => {
+                write!(f, "invalid start window [{earliest}, {latest}]")
+            }
+            Self::UnknownResource => f.write_str("demand names an unknown timeline"),
+            Self::SearchExhausted { checks } => {
+                write!(f, "search exhausted its budget of {checks} checks")
+            }
         }
     }
 }

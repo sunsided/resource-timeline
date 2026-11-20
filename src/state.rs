@@ -109,7 +109,8 @@ pub enum StateViolation {
         required: StateValue,
         /// The value the state has at `at`.
         actual: StateValue,
-        /// The activity that holds the requirement. The smallest id if several fail at `at`.
+        /// The activity that holds the requirement. The smallest id if several fail at `at`;
+        /// for several failing requirements of that activity, `required` is the smallest value.
         requirer: ActivityId,
         /// The activity whose set established `actual`, or `None` for the initial value.
         /// The smallest id if several set the same value at the same tick.
@@ -261,6 +262,50 @@ impl StateTimeline {
         before - self.impacts.len()
     }
 
+    /// Removes the most recently added impact, if any. Never allocates.
+    pub(crate) fn undo_last(&mut self) {
+        match self.impacts.pop() {
+            Some((activity, StateImpact::Set { at, value })) => {
+                let added = SetPoint {
+                    at,
+                    activity,
+                    value,
+                };
+                if let Some(index) = self.sets.iter().rposition(|set| *set == added) {
+                    self.sets.remove(index);
+                }
+            }
+            Some((_, StateImpact::Require { .. })) => {
+                self.requires.pop();
+            }
+            None => {}
+        }
+    }
+
+    /// The ticks at which the outcome of a check can change: the start, every set, and every
+    /// requirement start and end. Unsorted, possibly with duplicates.
+    pub(crate) fn change_ticks(&self) -> impl Iterator<Item = Tick> + '_ {
+        let sets = self.sets.iter().map(|set| set.at);
+        let requires = self
+            .requires
+            .iter()
+            .flat_map(|require| [require.start, require.end]);
+        core::iter::once(self.start).chain(sets).chain(requires)
+    }
+
+    /// `Ok` while the timeline has room for `extra` more impacts.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::BudgetExhausted`] if `extra` more impacts would exceed the budget.
+    pub(crate) fn ensure_room(&self, extra: usize) -> Result<(), Error> {
+        if self.impacts.len().saturating_add(extra) > self.budget {
+            return Err(Error::BudgetExhausted { limit: self.budget });
+        }
+
+        Ok(())
+    }
+
     /// Checks that `impact` is well formed and does not precede the start.
     ///
     /// # Errors
@@ -314,6 +359,18 @@ impl StateTimeline {
             Some(breach) => view.explain(breach).map(Some),
             None => Ok(None),
         }
+    }
+
+    /// Whether the timeline would be violated if the sorted `extra_sets` and the
+    /// `extra_requires` were added. Never allocates.
+    pub(crate) fn is_violated_with(
+        &self,
+        extra_sets: &[SetPoint],
+        extra_requires: &[Requirement],
+    ) -> bool {
+        self.view(extra_sets)
+            .first_breach(self.initial, &self.requires, extra_requires)
+            .is_some()
     }
 
     /// The stored sets merged with `extra`, for queries.

@@ -70,7 +70,7 @@ fn violation_at(timeline: &StateTimeline, t: Tick) -> Option<StateViolation> {
 }
 
 /// The first violation, found by checking every tick up to the last referenced one.
-fn oracle(timeline: &StateTimeline) -> Option<StateViolation> {
+pub fn oracle(timeline: &StateTimeline) -> Option<StateViolation> {
     let last = timeline
         .impacts()
         .iter()

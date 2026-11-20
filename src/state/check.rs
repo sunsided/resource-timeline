@@ -164,7 +164,7 @@ impl Sets<'_> {
     /// The earliest violation over the stored and tentative requirements.
     ///
     /// A conflict wins over a mismatch at the same or a later tick. Among mismatches at the same
-    /// tick the smallest requirer id wins.
+    /// tick the smallest requirer id wins, then the smallest required value.
     pub(super) fn first_breach(
         &self,
         initial: StateValue,
@@ -177,8 +177,13 @@ impl Sets<'_> {
             .chain(extra_requires)
             .filter_map(|requirement| self.mismatch(requirement, initial))
             .min_by_key(|breach| match *breach {
-                Breach::Mismatch { at, requirer, .. } => (at, requirer),
-                Breach::Conflict { at } => (at, ActivityId(0)),
+                Breach::Mismatch {
+                    at,
+                    requirer,
+                    required,
+                    ..
+                } => (at, requirer, required),
+                Breach::Conflict { at } => (at, ActivityId(0), 0),
             });
 
         match (mismatch, conflict) {

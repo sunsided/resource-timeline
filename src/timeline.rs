@@ -1,6 +1,6 @@
 //! Numeric resource timelines and their bound checks.
 
-mod profile;
+pub(crate) mod profile;
 pub(crate) mod sweep;
 
 use alloc::vec::Vec;
@@ -234,6 +234,31 @@ impl Timeline {
         });
 
         before - self.impacts.len()
+    }
+
+    /// Removes the most recently added impact, if any. Never allocates.
+    pub(crate) fn undo_last(&mut self) {
+        if let Some((_, impact)) = self.impacts.pop() {
+            self.profile.remove(&impact);
+        }
+    }
+
+    /// The ticks of all change points, sorted ascending.
+    pub(crate) fn change_ticks(&self) -> impl Iterator<Item = Tick> + '_ {
+        self.profile.points().iter().map(|point| point.at)
+    }
+
+    /// `Ok` while the timeline has room for `extra` more impacts.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::BudgetExhausted`] if `extra` more impacts would exceed the budget.
+    pub(crate) fn ensure_room(&self, extra: usize) -> Result<(), Error> {
+        if self.impacts.len().saturating_add(extra) > self.budget {
+            return Err(Error::BudgetExhausted { limit: self.budget });
+        }
+
+        Ok(())
     }
 
     /// Checks that `impact` fits this timeline's kind and start, and is well formed.
