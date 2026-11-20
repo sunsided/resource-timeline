@@ -7,17 +7,21 @@
 //! falls below the minimum and the upper never exceeds the maximum, every schedule is safe and
 //! the dispatcher may pick any start in the windows without re-checking resources.
 //!
-//! This is the resource-envelope idea from Muscettola's work on flexible schedules, in its
-//! simplest form: the windows are treated as independent. The activities' starts may then be
-//! chosen separately, so the extreme level at a tick is the sum of each activity's own extreme
+//! This is the resource-envelope idea from Muscettola's work on flexible schedules. In its
+//! simplest form the windows are independent: the activities' starts may be chosen
+//! separately, so the extreme level at a tick is the sum of each activity's own extreme
 //! contribution there, and the envelope computed here is exactly the tightest one for
-//! independent windows. Precedence constraints between activities (`b` starts after `a` ends)
-//! rule out some combinations; ignoring them only adds schedules, so the envelope stays sound
-//! but may be loose. A precedence-aware envelope is not implemented. Durations are fixed. On a
-//! depletable timeline, a hold of uncertain length can be modelled as a step pair: a negative
-//! step owned by a start part and a positive step owned by an end part, each with its own
-//! window. This does not work for claims on a claimable timeline (steps are rejected there) or
-//! for rates, whose total depends on the duration.
+//! independent windows. Three refinements build on it:
+//!
+//! - **Uncertain durations** ([`Envelope::with_contingent`]): a [`Contingent`] activity has a
+//!   start window and a duration range, and its impacts are [`Uncertain`]: anchored at the
+//!   start or at the (uncertain) end. Claims held until the end on a claimable timeline and
+//!   rates that run until the end are covered for every start and every duration, exactly.
+//! - **Precedences** ([`Envelope::with_precedences`]): [`Precedence`] constraints between
+//!   starts tighten the windows by propagation and couple stepwise activities through a
+//!   maximum-weight closure, which is exact for them; see the `precedence` module.
+//! - **States** ([`StateEnvelope`]): the same question for a state timeline, with
+//!   requirements and conflicting sets instead of bounds; exact for independent windows.
 //!
 //! # Bridge to `temporal-control`
 //!
@@ -26,17 +30,33 @@
 //! `upper` between the origin and each activity's start time point; during execution from
 //! `Dispatcher::window`, which narrows as events are observed. Unbounded sides must be clamped
 //! to a mission horizon. Re-running [`Envelope::check`] on the narrowed windows after each
-//! observation keeps the resource guarantee in step with the temporal one.
+//! observation keeps the resource guarantee in step with the temporal one. Contingent link
+//! bounds `[l, u]` of an STNU become the [`Contingent::duration`], and the network's
+//! requirement links between starts become [`Precedence`]s.
 //!
 //! ```mermaid
 //! graph LR
 //!     stn["temporal-control: start windows"] --> flexible["Flexible activities"]
 //!     fixed["Timeline: fixed impacts"] --> envelope["Envelope: lower and upper level per tick"]
+//!     contingent["Contingent activities: start window, duration range"] --> envelope
+//!     precedences["Precedences between starts"] --> envelope
 //!     flexible --> envelope
 //!     envelope --> verdict["Verdict: Safe, Possible or Certain"]
 //! ```
 
+mod closure;
+mod contingent;
+mod member;
+mod precedence;
+mod state;
+
 use alloc::vec::Vec;
+
+pub use contingent::{Anchor, Contingent, Uncertain};
+use member::{Extreme, Member, Shape};
+use precedence::Network;
+pub use precedence::Precedence;
+pub use state::{FlexibleState, StateEnvelope, StateEnvelopeViolation, StateVerdict};
 
 use crate::storage::{Heap, Storage};
 use crate::{ActivityId, Bound, Error, Impact, Level, Tick, Timeline, Window};
@@ -118,25 +138,26 @@ pub struct EnvelopeViolation {
 /// assert_eq!(Envelope::new(&battery, &flexible)?.check()?, Verdict::Safe);
 /// # Ok::<(), resource_timeline::Error>(())
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Envelope<'a, S: Storage = Heap> {
-    /// The timeline with the fixed impacts, start, initial level and bounds.
+    /// The timeline with the fixed impacts, start, initial level, bounds and targets.
     timeline: &'a Timeline<S>,
-    /// The flexible activities, validated against the timeline.
-    flexible: &'a [Flexible<'a>],
-}
-
-/// Which extreme of the level an evaluation asks for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Extreme {
-    /// The lowest level over all admitted schedules.
-    Lower,
-    /// The highest level over all admitted schedules.
-    Upper,
+    /// The flexible and contingent activities, validated against the timeline.
+    members: Vec<Member<'a>>,
+    /// The start window of each member, tightened by the precedences.
+    windows: Vec<Window>,
+    /// The precedences between members, as given.
+    precedences: Vec<Precedence>,
+    /// The temporal network of the precedences, `None` without precedences.
+    network: Option<Network>,
 }
 
 impl<'a, S: Storage> Envelope<'a, S> {
     /// Combines the fixed impacts of `timeline` with the `flexible` activities.
+    ///
+    /// The windows are independent until [`with_precedences`](Self::with_precedences) couples
+    /// them; [`with_contingent`](Self::with_contingent) adds activities with uncertain
+    /// durations.
     ///
     /// # Errors
     ///
@@ -144,6 +165,7 @@ impl<'a, S: Storage> Envelope<'a, S> {
     ///   latest start of its window, including [`Error::BeforeStart`] when the earliest start
     ///   would place an impact before the timeline start.
     /// - [`Error::Overflow`] if a shifted tick does not fit a [`Tick`].
+    /// - [`Error::OutOfMemory`] if the activity list cannot be allocated.
     pub fn new(timeline: &'a Timeline<S>, flexible: &'a [Flexible<'a>]) -> Result<Self, Error> {
         for activity in flexible {
             for impact in activity.impacts {
@@ -153,18 +175,132 @@ impl<'a, S: Storage> Envelope<'a, S> {
             }
         }
 
-        Ok(Self { timeline, flexible })
+        let mut envelope = Self {
+            timeline,
+            members: Vec::new(),
+            windows: Vec::new(),
+            precedences: Vec::new(),
+            network: None,
+        };
+        envelope.extend(flexible.iter().map(|activity| Member {
+            activity: activity.activity,
+            window: activity.window,
+            shape: Shape::Fixed(activity.impacts),
+        }))?;
+        Ok(envelope)
+    }
+
+    /// Adds activities whose durations are uncertain.
+    ///
+    /// The envelope then covers every start in each window combined with every duration in
+    /// each duration range. Claims and rates that last as long as the activity are anchored at
+    /// its end, see [`Uncertain`]. Such a member's extreme at a tick is found by evaluating its
+    /// profile at the vertices of the (start, duration) box, see the `member` module.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::NegativeDuration`] if a duration range starts below zero.
+    /// - [`Error::EmptyInterval`] if a claim or rate interval is inverted for some duration
+    ///   (an empty interval at the shortest duration is allowed).
+    /// - The other validation errors of [`Timeline::add`] for any impact at the corners of the
+    ///   start window and the duration range.
+    /// - The errors of [`with_precedences`](Self::with_precedences) if precedences were
+    ///   given before.
+    /// - [`Error::Overflow`] if a tick does not fit a [`Tick`].
+    pub fn with_contingent(mut self, contingent: &'a [Contingent<'a>]) -> Result<Self, Error> {
+        for activity in contingent {
+            self.validate_contingent(activity)?;
+        }
+
+        self.extend(contingent.iter().map(|activity| Member {
+            activity: activity.activity,
+            window: activity.window,
+            shape: Shape::Uncertain {
+                duration: activity.duration,
+                impacts: activity.impacts,
+            },
+        }))?;
+        self.couple()?;
+        Ok(self)
+    }
+
+    /// Restricts the schedules to those that respect `precedences` between the activities.
+    ///
+    /// The windows are tightened by propagation, and activities with stepwise impacts (steps
+    /// and claims) that take part in a precedence get a joint, exact extreme; see the
+    /// `precedence` module. Activities with rates or uncertain durations keep separate
+    /// extremes over their tightened windows. The envelopes are never looser than without
+    /// precedences, and still sound for every schedule that satisfies them. They are exact if
+    /// every activity is stepwise; otherwise the separate extremes may add up to a level no
+    /// single schedule reaches, so [`Verdict::Possible`] may then be a false alarm (never
+    /// [`Verdict::Safe`] a false all-clear).
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::UnknownActivity`] if a precedence names an activity that is not part of the
+    ///   envelope.
+    /// - [`Error::InconsistentPrecedences`] if no schedule satisfies the windows and the
+    ///   precedences together.
+    /// - [`Error::OutOfMemory`] if the network cannot be allocated.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use resource_timeline::envelope::{Envelope, Flexible, Precedence, Verdict};
+    /// use resource_timeline::{ActivityId, Bounds, Impact, Timeline, Window};
+    ///
+    /// // One transmitter; two downlinks of 10 ticks, each anywhere in [0, 20].
+    /// let transmitter = Timeline::claimable(0, 1, 8)?;
+    /// let downlink = [Impact::Claim { start: 0, end: 10, amount: 1 }];
+    /// let window = Window::new(0, 20)?;
+    /// let flexible = [
+    ///     Flexible { activity: ActivityId(1), window, impacts: &downlink },
+    ///     Flexible { activity: ActivityId(2), window, impacts: &downlink },
+    /// ];
+    ///
+    /// // Independent windows let the downlinks overlap.
+    /// let independent = Envelope::new(&transmitter, &flexible)?;
+    /// assert!(matches!(independent.check()?, Verdict::Possible(_)));
+    ///
+    /// // "2 starts after 1 has ended" rules every overlap out.
+    /// let ordered = independent.with_precedences(&[Precedence {
+    ///     before: ActivityId(1),
+    ///     after: ActivityId(2),
+    ///     gap: 10,
+    /// }])?;
+    /// assert_eq!(ordered.check()?, Verdict::Safe);
+    /// assert_eq!(ordered.window(ActivityId(1)), Some(Window::new(0, 10)?));
+    /// # Ok::<(), resource_timeline::Error>(())
+    /// ```
+    pub fn with_precedences(mut self, precedences: &[Precedence]) -> Result<Self, Error> {
+        self.precedences
+            .try_reserve(precedences.len())
+            .map_err(|_| Error::OutOfMemory)?;
+        self.precedences.extend_from_slice(precedences);
+        self.couple()?;
+        Ok(self)
+    }
+
+    /// The start window of the first activity with id `activity`, tightened by the
+    /// precedences, or `None` if there is no such activity.
+    #[must_use]
+    pub fn window(&self, activity: ActivityId) -> Option<Window> {
+        self.members
+            .iter()
+            .position(|member| member.activity == activity)
+            .map(|index| self.windows[index])
     }
 
     /// The lowest level any admitted schedule has at tick `t`.
     ///
-    /// Costs `O(n + f k^2)` for `n` fixed impacts and `f` flexible activities with `k` impacts
-    /// each.
+    /// Costs `O(n + f k^2)` for `n` fixed impacts and `f` independent activities with `k`
+    /// impacts each, plus a minimum cut over the pending events of coupled activities.
     ///
     /// # Errors
     ///
     /// - [`Error::BeforeStart`] if `t` precedes the timeline start.
     /// - [`Error::Overflow`] if the value does not fit a [`Level`].
+    /// - [`Error::OutOfMemory`] if the event graph of coupled activities cannot be allocated.
     pub fn lower_at(&self, t: Tick) -> Result<Level, Error> {
         self.level_at(t, Extreme::Lower)
     }
@@ -212,6 +348,59 @@ impl<'a, S: Storage> Envelope<'a, S> {
         Ok(possible.map_or(Verdict::Safe, Verdict::Possible))
     }
 
+    /// Appends members with their windows as given.
+    fn extend(&mut self, members: impl ExactSizeIterator<Item = Member<'a>>) -> Result<(), Error> {
+        let extra = members.len();
+        self.members
+            .try_reserve(extra)
+            .map_err(|_| Error::OutOfMemory)?;
+        self.windows
+            .try_reserve(extra)
+            .map_err(|_| Error::OutOfMemory)?;
+        for member in members {
+            self.windows.push(member.window);
+            self.members.push(member);
+        }
+
+        Ok(())
+    }
+
+    /// Recomputes the tightened windows and the network from the precedences.
+    fn couple(&mut self) -> Result<(), Error> {
+        if self.precedences.is_empty() {
+            return Ok(());
+        }
+
+        let (windows, network) = Network::propagate(&self.members, &self.precedences)?;
+        self.windows = windows;
+        self.network = Some(network);
+        Ok(())
+    }
+
+    /// Checks a contingent activity's impacts at every corner of its start window and
+    /// duration range.
+    fn validate_contingent(&self, activity: &Contingent<'_>) -> Result<(), Error> {
+        let duration = activity.duration;
+        if duration.earliest() < 0 {
+            return Err(Error::NegativeDuration {
+                shortest: duration.earliest(),
+            });
+        }
+
+        for impact in activity.impacts {
+            for length in [duration.earliest(), duration.latest()] {
+                let relative = impact.resolve(length).ok_or(Error::Overflow)?;
+                let relative = contingent::widened(relative)?;
+                for start in [activity.window.earliest(), activity.window.latest()] {
+                    let shifted = relative.shifted(start).ok_or(Error::Overflow)?;
+                    self.timeline.validate(shifted)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// The limits in force at `t`: the bounds, then each target at `t`, as
     /// `(min, max, is_target)`.
     fn limits_at(&self, t: Tick) -> impl Iterator<Item = (Level, Level, bool)> + '_ {
@@ -225,12 +414,26 @@ impl<'a, S: Storage> Envelope<'a, S> {
         core::iter::once((bounds.min(), bounds.max(), false)).chain(targets)
     }
 
-    /// The fixed level plus each flexible activity's extreme contribution at `t`.
+    /// The fixed level plus the extreme contributions of the members at `t`: coupled members
+    /// jointly, the others one by one.
     fn level_at(&self, t: Tick, extreme: Extreme) -> Result<Level, Error> {
         let mut level = i128::from(self.timeline.level_at(t)?);
-        for activity in self.flexible {
-            let contribution = extreme_contribution(activity, t, extreme)?;
+        for (index, member) in self.members.iter().enumerate() {
+            if self
+                .network
+                .as_ref()
+                .is_some_and(|network| network.is_coupled(index))
+            {
+                continue;
+            }
+
+            let contribution = member.extreme_at(self.windows[index], t, extreme)?;
             level = level.checked_add(contribution).ok_or(Error::Overflow)?;
+        }
+
+        if let Some(network) = &self.network {
+            let coupled = network.coupled_extreme(&self.members, &self.windows, t, extreme)?;
+            level = level.checked_add(coupled).ok_or(Error::Overflow)?;
         }
 
         Level::try_from(level).map_err(|_| Error::Overflow)
@@ -259,10 +462,10 @@ impl<'a, S: Storage> Envelope<'a, S> {
             push(i128::from(tick))?;
         }
 
-        for activity in self.flexible {
-            for offset in offsets(activity.impacts) {
-                for start in [activity.window.earliest(), activity.window.latest()] {
-                    push(i128::from(offset) + i128::from(start))?;
+        for (member, window) in self.members.iter().zip(&self.windows) {
+            for offset in member.offsets() {
+                for start in [window.earliest(), window.latest()] {
+                    push(offset + i128::from(start))?;
                 }
             }
         }
@@ -283,12 +486,12 @@ impl<'a, S: Storage> Envelope<'a, S> {
         let mut contributors = Vec::new();
         let fixed = self.timeline.contributors_at(t, bound)?;
         contributors
-            .try_reserve_exact(fixed.len() + self.flexible.len())
+            .try_reserve_exact(fixed.len() + self.members.len())
             .map_err(|_| Error::OutOfMemory)?;
         contributors.extend_from_slice(&fixed);
-        for activity in self.flexible {
-            if bound.is_pushed_by(extreme_contribution(activity, t, towards)?) {
-                contributors.push(activity.activity);
+        for (member, window) in self.members.iter().zip(&self.windows) {
+            if bound.is_pushed_by(member.extreme_at(*window, t, towards)?) {
+                contributors.push(member.activity);
             }
         }
 
@@ -346,58 +549,4 @@ const fn possible_breach(
     } else {
         None
     }
-}
-
-/// The extreme contribution of `activity` at tick `t` over all starts in its window.
-///
-/// With start `s`, the contribution at `t` is the activity's own profile at the relative time
-/// `u = t - s`, so the extreme over `s` in `[earliest, latest]` is the extreme of the profile
-/// over `u` in `[t - latest, t - earliest]`. The profile is linear between its offsets, so the
-/// extreme lies at a window end or at an offset or the tick before one.
-fn extreme_contribution(activity: &Flexible<'_>, t: Tick, extreme: Extreme) -> Result<i128, Error> {
-    let first = i128::from(t) - i128::from(activity.window.latest());
-    let last = i128::from(t) - i128::from(activity.window.earliest());
-    let inner = offsets(activity.impacts).flat_map(|offset| {
-        let offset = i128::from(offset);
-        [offset - 1, offset]
-    });
-
-    let mut best: Option<i128> = None;
-    for u in [first, last].into_iter().chain(inner) {
-        if u < first || u > last {
-            continue;
-        }
-
-        let value = profile_at(activity.impacts, u)?;
-        best = Some(match (best, extreme) {
-            (None, _) => value,
-            (Some(best), Extreme::Lower) => best.min(value),
-            (Some(best), Extreme::Upper) => best.max(value),
-        });
-    }
-
-    Ok(best.unwrap_or(0))
-}
-
-/// The summed contribution of `impacts` at relative time `u`.
-///
-/// `u` may lie outside the [`Tick`] range. Below it nothing has happened yet; above it the
-/// value is the one at [`Tick::MAX`], because every impact ends by then.
-fn profile_at(impacts: &[Impact], u: i128) -> Result<i128, Error> {
-    if u < i128::from(Tick::MIN) {
-        return Ok(0);
-    }
-
-    let u = Tick::try_from(u.min(i128::from(Tick::MAX))).map_err(|_| Error::Overflow)?;
-    impacts.iter().try_fold(0_i128, |sum, impact| {
-        let contribution = impact.contribution_at(u).ok_or(Error::Overflow)?;
-        sum.checked_add(contribution).ok_or(Error::Overflow)
-    })
-}
-
-/// The relative ticks at which `impacts` change the level or its slope.
-fn offsets(impacts: &[Impact]) -> impl Iterator<Item = Tick> + '_ {
-    impacts
-        .iter()
-        .flat_map(|impact| [impact.first_tick(), impact.last_tick()])
 }

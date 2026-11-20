@@ -2,6 +2,9 @@
 
 mod edge_cases;
 mod envelope;
+mod envelope_contingent;
+mod envelope_precedence;
+mod envelope_state;
 mod errors;
 mod extract;
 mod fixed;

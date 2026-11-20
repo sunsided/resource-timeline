@@ -8,11 +8,11 @@ use crate::oracle;
 use crate::properties::{owned_impact, with_impacts};
 
 /// A generated flexible activity: window start, window length and impacts relative to start.
-type Generated = (i64, i64, Vec<Impact>);
+pub type Generated = (i64, i64, Vec<Impact>);
 
 /// A battery-like timeline with a few fixed impacts and up to three flexible activities whose
 /// windows start at or after its start.
-fn scenario() -> impl Strategy<Value = (Timeline, Vec<Generated>)> {
+pub fn scenario() -> impl Strategy<Value = (Timeline, Vec<Generated>)> {
     let base = (-3_i64..3, 4_i64..=12, 8_i64..=16).prop_flat_map(|(start, initial, max)| {
         prop::collection::vec(owned_impact(start, false), 0..4).prop_map(move |impacts| {
             let bounds = Bounds::new(0, max).expect("valid");
@@ -33,7 +33,7 @@ fn scenario() -> impl Strategy<Value = (Timeline, Vec<Generated>)> {
 }
 
 /// The flexible activities described by `generated`, with ids from 10 on.
-fn flexible(generated: &[Generated]) -> Vec<Flexible<'_>> {
+pub fn flexible(generated: &[Generated]) -> Vec<Flexible<'_>> {
     (10_u32..)
         .zip(generated)
         .map(|(id, (earliest, length, impacts))| Flexible {
@@ -45,7 +45,7 @@ fn flexible(generated: &[Generated]) -> Vec<Flexible<'_>> {
 }
 
 /// Every concrete timeline the windows admit: one per combination of starts.
-fn schedules(timeline: &Timeline, flexible: &[Flexible<'_>]) -> Vec<Timeline> {
+pub fn schedules(timeline: &Timeline, flexible: &[Flexible<'_>]) -> Vec<Timeline> {
     let mut concrete = vec![timeline.clone()];
     for activity in flexible {
         let window = activity.window;
@@ -69,12 +69,12 @@ fn schedules(timeline: &Timeline, flexible: &[Flexible<'_>]) -> Vec<Timeline> {
 }
 
 /// A tick after which no generated level changes any more.
-fn horizon(timeline: &Timeline, generated: &[Generated]) -> Tick {
+pub fn horizon(timeline: &Timeline, generated: &[Generated]) -> Tick {
     timeline.start() + 40 + Tick::try_from(generated.len()).expect("small")
 }
 
 /// Whether the level of `concrete` is out of its bounds at `t`.
-fn out_of_bounds(concrete: &Timeline, t: Tick) -> bool {
+pub fn out_of_bounds(concrete: &Timeline, t: Tick) -> bool {
     let level = oracle::level_at(concrete, t);
     let bounds = concrete.bounds();
     level < i128::from(bounds.min()) || level > i128::from(bounds.max())

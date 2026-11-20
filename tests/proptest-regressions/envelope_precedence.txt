@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc ecc6f05a17c8110eb8a15fbe52a1d8e5f013ff650a37fb05fa289c5af4c2ea55 # shrinks to (timeline, generated, precedences) = (Timeline { kind: Depletable, start: 0, initial: 7, bounds: Bounds { min: 0, max: 9 }, budget: 64, impacts: [(ActivityId(0), Rate { start: 2, end: 3, per_tick: -2 }), (ActivityId(1), Claim { start: 18, end: 24, amount: 1 })], profile: Profile { points: [Point { at: 2, step: 0, slope: -2, refs: 1 }, Point { at: 3, step: 0, slope: 2, refs: 1 }, Point { at: 18, step: -1, slope: 0, refs: 1 }, Point { at: 24, step: 1, slope: 0, refs: 1 }] }, targets: [] }, [(7, 1, [Rate { start: 13, end: 19, per_tick: 1 }, Claim { start: 3, end: 4, amount: 3 }]), (7, 3, [Rate { start: 8, end: 13, per_tick: -1 }, Rate { start: 4, end: 5, per_tick: 0 }])], [Precedence { before: ActivityId(10), after: ActivityId(11), gap: 1 }])

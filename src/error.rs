@@ -79,6 +79,18 @@ pub enum Error {
     },
     /// A demand names a timeline that is not part of the plan.
     UnknownResource,
+    /// A precedence names an activity that is not part of the envelope.
+    UnknownActivity {
+        /// The unknown activity.
+        activity: crate::ActivityId,
+    },
+    /// The start windows and precedences of an envelope admit no schedule at all.
+    InconsistentPrecedences,
+    /// A duration range of an activity starts below zero.
+    NegativeDuration {
+        /// The requested shortest duration.
+        shortest: Tick,
+    },
     /// A search ran out of its caller-chosen number of candidate checks before it found an
     /// answer.
     SearchExhausted {
@@ -171,6 +183,13 @@ impl fmt::Display for Error {
             }
             Self::InvalidStep { step } => write!(f, "sampling step {step} is not positive"),
             Self::UnknownResource => f.write_str("demand names an unknown timeline"),
+            Self::UnknownActivity { activity } => {
+                write!(f, "precedence names unknown activity {}", activity.0)
+            }
+            Self::InconsistentPrecedences => f.write_str("precedences admit no schedule"),
+            Self::NegativeDuration { shortest } => {
+                write!(f, "shortest duration {shortest} is negative")
+            }
             Self::SearchExhausted { checks } => {
                 write!(f, "search exhausted its budget of {checks} checks")
             }
