@@ -3,6 +3,7 @@
 mod edge_cases;
 mod envelope;
 mod errors;
+mod extract;
 mod fixed;
 mod greedy;
 mod oracle;

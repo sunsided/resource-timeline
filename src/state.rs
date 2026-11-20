@@ -388,6 +388,44 @@ impl<S: Storage> StateTimeline<S> {
         Ok(self.view(&[]).value_at(t, self.initial))
     }
 
+    /// The value changes over time for display and telemetry: `(tick, value)` pairs in time
+    /// order, starting with the initial value at the start tick.
+    ///
+    /// A tick appears only if the value there differs from the one before; `None` marks a tick
+    /// where contradicting sets make the value ambiguous. Costs `O(n log n)` and never
+    /// allocates.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use resource_timeline::{ActivityId, StateImpact, StateTimeline};
+    ///
+    /// let mut mode = StateTimeline::new(0, 0, 8);
+    /// mode.add(ActivityId(1), StateImpact::Set { at: 5, value: 1 })?;
+    /// mode.add(ActivityId(2), StateImpact::Set { at: 9, value: 1 })?;
+    /// mode.add(ActivityId(3), StateImpact::Set { at: 12, value: 0 })?;
+    ///
+    /// let changes: Vec<_> = mode.values().collect();
+    /// assert_eq!(changes, [(0, Some(0)), (5, Some(1)), (12, Some(0))]);
+    /// # Ok::<(), resource_timeline::Error>(())
+    /// ```
+    pub fn values(&self) -> impl Iterator<Item = (Tick, Option<StateValue>)> + '_ {
+        let mut previous: Option<Option<StateValue>> = None;
+        let view = self.view(&[]);
+        let start = core::iter::once((self.start, view.value_at(self.start, self.initial)));
+        let set_ticks = self
+            .sets
+            .iter()
+            .enumerate()
+            .filter(|&(index, set)| index == 0 || self.sets[index - 1].at != set.at)
+            .map(move |(_, set)| (set.at, view.value_at(set.at, self.initial)));
+        start.chain(set_ticks).filter(move |&(_, value)| {
+            let changed = previous != Some(value);
+            previous = Some(value);
+            changed
+        })
+    }
+
     /// Finds the earliest violation: a failed requirement or contradicting sets.
     ///
     /// A conflict at tick `c` wins over mismatches at `c` or later, since the state is

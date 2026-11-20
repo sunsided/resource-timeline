@@ -10,7 +10,7 @@ const A: ActivityId = ActivityId(1);
 const B: ActivityId = ActivityId(2);
 
 /// The latest set tick at or before `t` and the sets there, from the impact list.
-fn latest_sets(timeline: &StateTimeline, t: Tick) -> Vec<(ActivityId, u32, Tick)> {
+pub fn latest_sets(timeline: &StateTimeline, t: Tick) -> Vec<(ActivityId, u32, Tick)> {
     let sets: Vec<_> = timeline
         .impacts()
         .iter()
@@ -83,7 +83,7 @@ pub fn oracle(timeline: &StateTimeline) -> Option<StateViolation> {
 }
 
 /// A state timeline over three values with up to ten random impacts.
-fn timeline() -> impl Strategy<Value = StateTimeline> {
+pub fn timeline() -> impl Strategy<Value = StateTimeline> {
     let set = (0_i64..15, 0_u32..3).prop_map(|(at, value)| StateImpact::Set { at, value });
     let require =
         (0_i64..15, 1_i64..6, 0_u32..3).prop_map(|(start, length, value)| StateImpact::Require {

@@ -146,15 +146,9 @@ impl<'a> Segments<'a> {
     /// The pieces of the level that starts at `frame` and changes at `base` and `extra`.
     ///
     /// Both slices must be sorted by tick and must not contain ticks before `frame.start`.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Overflow`] if the level at the start exceeds `i128`.
-    pub(crate) fn new(
-        frame: &Frame<'_>,
-        base: &'a [Point],
-        extra: &'a [Point],
-    ) -> Result<Self, Error> {
+    /// The level at the start cannot overflow: a point's step is below `2^124` in magnitude
+    /// (see the profile module), and the initial level is an `i64`.
+    pub(crate) fn new(frame: &Frame<'_>, base: &'a [Point], extra: &'a [Point]) -> Self {
         let mut groups = Grouped { base, extra }.peekable();
         let mut first = Segment {
             at: frame.start,
@@ -163,15 +157,15 @@ impl<'a> Segments<'a> {
             next: None,
         };
         if let Some(point) = groups.next_if(|point| point.at == frame.start) {
-            first.level = first.level.checked_add(point.step).ok_or(Error::Overflow)?;
+            first.level += point.step;
             first.slope = point.slope;
         }
 
         first.next = groups.peek().map(|point| point.at);
-        Ok(Self {
+        Self {
             groups,
             current: Some(first),
-        })
+        }
     }
 
     /// The piece after `segment`, which starts at the next change point.
@@ -228,7 +222,7 @@ pub(crate) fn first_breach(
     extra: &[Point],
 ) -> Result<Option<Breach>, Error> {
     let mut targets = frame.targets;
-    for segment in Segments::new(frame, base, extra)? {
+    for segment in Segments::new(frame, base, extra) {
         let segment = segment?;
         if let Some(bound) = broken_bound(frame.bounds, segment.level) {
             return Ok(Some(Breach {

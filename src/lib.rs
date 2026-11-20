@@ -95,6 +95,7 @@ pub use impact::Impact;
 pub use plan::{Demand, Plan, PlanViolation, StateId, TimelineId};
 pub use state::{StateImpact, StateTimeline, StateValue, StateViolation};
 pub use target::Target;
+pub use timeline::extract::{Breakpoint, Breakpoints, LevelProfile, Samples};
 pub use timeline::{Bounds, Kind, Timeline};
 pub use violation::{Bound, Violation};
 pub use window::Window;

@@ -72,6 +72,11 @@ pub enum Error {
         /// The requested latest start.
         latest: Tick,
     },
+    /// A sampling step is zero or negative.
+    InvalidStep {
+        /// The rejected step.
+        step: Tick,
+    },
     /// A demand names a timeline that is not part of the plan.
     UnknownResource,
     /// A search ran out of its caller-chosen number of candidate checks before it found an
@@ -164,6 +169,7 @@ impl fmt::Display for Error {
             Self::InvalidWindow { earliest, latest } => {
                 write!(f, "invalid start window [{earliest}, {latest}]")
             }
+            Self::InvalidStep { step } => write!(f, "sampling step {step} is not positive"),
             Self::UnknownResource => f.write_str("demand names an unknown timeline"),
             Self::SearchExhausted { checks } => {
                 write!(f, "search exhausted its budget of {checks} checks")

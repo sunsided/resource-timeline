@@ -35,7 +35,7 @@ pub fn owned_impact(start: i64, claims_only: bool) -> impl Strategy<Value = (Act
 }
 
 /// A depletable timeline with small bounds and up to a dozen impacts.
-fn depletable() -> impl Strategy<Value = Timeline> {
+pub fn depletable() -> impl Strategy<Value = Timeline> {
     (-3_i64..3, -2_i64..=12, -3_i64..=3, 0_i64..=12).prop_flat_map(|(start, initial, min, span)| {
         prop::collection::vec(owned_impact(start, false), 0..12).prop_map(move |impacts| {
             let bounds = Bounds::new(min, min + span).expect("min <= min + span");

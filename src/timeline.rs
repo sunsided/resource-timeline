@@ -1,5 +1,6 @@
 //! Numeric resource timelines and their bound checks.
 
+pub(crate) mod extract;
 pub(crate) mod profile;
 pub(crate) mod sweep;
 
