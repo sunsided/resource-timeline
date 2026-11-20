@@ -13,9 +13,11 @@
 //! contribution there, and the envelope computed here is exactly the tightest one for
 //! independent windows. Precedence constraints between activities (`b` starts after `a` ends)
 //! rule out some combinations; ignoring them only adds schedules, so the envelope stays sound
-//! but may be loose. A precedence-aware envelope needs a max-flow computation per tick and is
-//! not implemented. Durations are fixed; an uncertain duration can be modelled by splitting the
-//! activity into a start part and an end part with their own windows.
+//! but may be loose. A precedence-aware envelope is not implemented. Durations are fixed. On a
+//! depletable timeline, a hold of uncertain length can be modelled as a step pair: a negative
+//! step owned by a start part and a positive step owned by an end part, each with its own
+//! window. This does not work for claims on a claimable timeline (steps are rejected there) or
+//! for rates, whose total depends on the duration.
 //!
 //! # Bridge to `temporal-control`
 //!
@@ -54,7 +56,9 @@ pub struct Flexible<'a> {
 pub enum Verdict {
     /// Every schedule the windows admit keeps the level within bounds at every tick.
     Safe,
-    /// Some schedule may leave the bounds at the reported tick. Not every schedule does.
+    /// Some schedule may leave the bounds at the reported tick, but not every schedule leaves
+    /// them at that same tick. This does not imply that a safe schedule exists: every schedule
+    /// may still violate, each at a different tick.
     Possible(EnvelopeViolation),
     /// Every schedule the windows admit leaves the bounds at the reported tick.
     Certain(EnvelopeViolation),

@@ -19,9 +19,11 @@ Resource timelines for onboard scheduling: energy, memory, thermal and communica
 
 ## Status
 
-Pre-release. Milestones 1 to 5 of [docs/design.md](docs/design.md) are implemented, and
-incremental updates from milestone 6. Not implemented yet: fixed-capacity (allocation-free)
-storage, state timelines in envelopes, and precedence-aware envelopes. The API will change.
+Pre-release. Milestones 1 to 4 of [docs/design.md](docs/design.md) are implemented except
+end-state level checks and profile extraction; milestone 5 covers flexible starts with fixed
+durations; milestone 6 covers incremental add and remove. Not implemented yet: fixed-capacity
+(allocation-free) storage, impacts with uncertain durations, state timelines in envelopes,
+precedence-aware envelopes, end-state level checks and profile extraction. The API will change.
 
 ## License
 

@@ -285,15 +285,7 @@ fn candidates(plan: &Plan, demands: &[Demand], window: Window) -> Result<Vec<Tic
 
         for offset in demand.offsets() {
             for &tick in &ticks {
-                let meet = i128::from(tick) - i128::from(offset);
-                for start in [meet, meet + 1] {
-                    if let Ok(start) = Tick::try_from(start) {
-                        if window.contains(start) {
-                            starts.try_reserve(1).map_err(|_| Error::OutOfMemory)?;
-                            starts.push(start);
-                        }
-                    }
-                }
+                push_meets(&mut starts, tick, offset, window)?;
             }
         }
     }
@@ -301,6 +293,29 @@ fn candidates(plan: &Plan, demands: &[Demand], window: Window) -> Result<Vec<Tic
     starts.sort_unstable();
     starts.dedup();
     Ok(starts)
+}
+
+/// Pushes the starts in `window` at which demand offset `offset` lands on `tick` or one tick
+/// before it, so that the comparison of the two changes.
+fn push_meets(
+    starts: &mut Vec<Tick>,
+    tick: Tick,
+    offset: Tick,
+    window: Window,
+) -> Result<(), Error> {
+    let meet = i128::from(tick) - i128::from(offset);
+    for start in [meet, meet + 1] {
+        let Ok(start) = Tick::try_from(start) else {
+            continue;
+        };
+
+        if window.contains(start) {
+            starts.try_reserve(1).map_err(|_| Error::OutOfMemory)?;
+            starts.push(start);
+        }
+    }
+
+    Ok(())
 }
 
 /// Collects `ticks` into a vector without aborting on allocation failure.

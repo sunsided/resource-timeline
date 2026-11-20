@@ -58,8 +58,9 @@
 //!
 //! ## Status
 //!
-//! Pre-release. Milestones 1 to 5 of `docs/design.md` are implemented, plus incremental updates
-//! from milestone 6; the fixed-capacity storage is not. The API will change.
+//! Pre-release. Milestones 1 to 4 of `docs/design.md` are implemented except end-state level
+//! checks and profile extraction, milestone 5 for flexible starts with fixed durations, and the
+//! incremental part of milestone 6. Fixed-capacity storage is not. The API will change.
 //!
 //! Repository: <https://github.com/sunsided/resource-timeline>
 
@@ -91,8 +92,8 @@ pub use window::Window;
 /// A point in time, as a count of integer ticks.
 ///
 /// The unit (seconds, milliseconds, spacecraft clock subticks) and the epoch are chosen by the
-/// mission; the crate never converts. `temporal-control` uses the same convention, so values
-/// pass between the crates unchanged.
+/// mission; the crate never converts. `temporal-control` uses the same convention in its
+/// `Ticks(pub i64)` newtype, so integration code converts by wrapping or unwrapping `.0`.
 pub type Tick = i64;
 
 /// A resource level in a mission-chosen integer unit, for example mWh, KiB or instrument units.

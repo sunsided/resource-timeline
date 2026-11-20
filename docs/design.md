@@ -1,8 +1,9 @@
 # resource-timeline: design
 
-Status: draft. Milestones 1 to 5 and the incremental part of milestone 6 are
-implemented; fixed-capacity storage and the items marked *not implemented*
-are plans.
+Status: draft. Milestones 1 to 4 are implemented except end-state level
+checks and profile extraction, milestone 5 for flexible starts with fixed
+durations, and the incremental part of milestone 6. Fixed-capacity storage
+and the items marked *not implemented* are plans.
 
 ## Purpose
 
@@ -174,8 +175,11 @@ the envelopes are constant in between and the reported tick is the
 earliest; with rates the upper envelope is convex and the lower concave
 between them, so `Safe` remains exact while the reported tick may be later.
 
-Not implemented: precedence-aware (max-flow) envelopes, and envelopes over
-state timelines.
+Not implemented: precedence-aware envelopes, envelopes over state
+timelines, and envelopes for uncertain durations. On a depletable timeline a
+hold of uncertain length can be modelled as a step pair owned by a start
+part and an end part with their own windows; claims on claimable timelines
+and rates cannot be split that way.
 
 ## Uncertain durations
 
@@ -295,8 +299,8 @@ a small common crate only then, per the ecosystem rule for `search-core`.
    impacts, mismatch and conflict explanations.
 5. **Uncertain durations** (partly done): envelopes for flexible starts with
    fixed durations, three-valued results. Interval impacts with uncertain
-   end ticks are not implemented; split such an activity into a start part
-   and an end part with their own windows.
+   end ticks are not implemented (see "Flexible starts" for the step-pair
+   workaround on depletable timelines).
 6. **Incremental checks and fixed-capacity storage** (incremental part
    done): add and remove on a sorted change-point profile, `O(n)`
    re-checks. The allocation-free variant with const-generic capacity is

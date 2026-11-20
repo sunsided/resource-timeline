@@ -396,3 +396,61 @@ fn keep_earlier(earliest: &mut Option<PlanViolation>, found: PlanViolation) {
         *earliest = Some(found);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Unit tests of the rollback path, which `place` reaches only on allocation failure.
+
+    use alloc::vec::Vec;
+
+    use super::{Demand, Plan};
+    use crate::{ActivityId, Bounds, Impact, StateImpact, StateTimeline, Timeline};
+
+    /// Undoing freshly added demands restores the plan exactly, including earlier impacts of
+    /// the same activity and duplicate sets.
+    #[test]
+    fn undo_restores_the_plan() {
+        let mut plan = Plan::new();
+        let bounds = Bounds::new(0, 10).expect("valid");
+        let battery = plan
+            .add_timeline(Timeline::depletable(0, 5, bounds, 8).expect("valid"))
+            .expect("memory");
+        let mode = plan.add_state(StateTimeline::new(0, 0, 8)).expect("memory");
+        let demands = [
+            Demand::Level {
+                timeline: battery,
+                impact: Impact::Rate {
+                    start: 0,
+                    end: 4,
+                    per_tick: -1,
+                },
+            },
+            Demand::State {
+                timeline: mode,
+                impact: StateImpact::Set { at: 2, value: 1 },
+            },
+            Demand::State {
+                timeline: mode,
+                impact: StateImpact::Require {
+                    start: 2,
+                    end: 5,
+                    value: 1,
+                },
+            },
+            Demand::Level {
+                timeline: battery,
+                impact: Impact::Step { at: 3, delta: 2 },
+            },
+        ];
+        plan.place(ActivityId(1), 1, &demands).expect("valid");
+        let before = plan.clone();
+
+        plan.place(ActivityId(1), 1, &demands).expect("valid");
+        let shifted: Vec<Demand> = demands
+            .iter()
+            .map(|d| plan.shift(d, 1).expect("small"))
+            .collect();
+        plan.undo(&shifted);
+        assert_eq!(plan, before);
+    }
+}
