@@ -14,6 +14,7 @@
 
 use super::Bounds;
 use super::profile::Point;
+use crate::plan::Offsets;
 use crate::storage::{Seq, Storage};
 use crate::{ActivityId, Bound, Container, Error, Impact, Level, Target, Tick, Violation};
 
@@ -62,6 +63,10 @@ impl Segment {
     ///
     /// [`Error::Overflow`] if the level exceeds `i128`.
     pub(crate) fn level_at(&self, t: Tick) -> Result<i128, Error> {
+        if self.slope == 0 {
+            return Ok(self.level);
+        }
+
         let elapsed = i128::from(t) - i128::from(self.at);
         self.slope
             .checked_mul(elapsed)
@@ -74,6 +79,10 @@ impl Segment {
     /// The level at `at` is in bounds. The line is checked up to the tick before `next`; the
     /// level at `next` includes the changes there and belongs to the next piece.
     fn crossing(&self, bounds: Bounds) -> Result<Option<Breach>, Error> {
+        if self.slope == 0 {
+            return Ok(None);
+        }
+
         let Some(next) = self.next else {
             debug_assert_eq!(self.slope, 0, "the last piece has a slope");
             return Ok(None);
@@ -110,6 +119,13 @@ impl Segment {
     /// The first missed target in the piece, consuming the targets before `next` from the
     /// front of `targets`.
     fn missed_target(&self, targets: &mut &[Target]) -> Result<Option<Breach>, Error> {
+        if targets
+            .first()
+            .is_none_or(|first| self.next.is_some_and(|next| first.at >= next))
+        {
+            return Ok(None);
+        }
+
         let inside = targets
             .iter()
             .take_while(|target| self.next.is_none_or(|next| target.at < next))
@@ -221,30 +237,124 @@ pub(crate) fn first_breach(
     base: &[Point],
     extra: &[Point],
 ) -> Result<Option<Breach>, Error> {
+    // A hand-rolled walk instead of `Segments`: this is the hot path of every check and search,
+    // and consuming each point as it comes avoids the look-ahead the iterator needs.
     let mut targets = frame.targets;
-    for segment in Segments::new(frame, base, extra) {
-        let segment = segment?;
-        if let Some(bound) = broken_bound(frame.bounds, segment.level) {
+    let mut groups = Grouped { base, extra }.peekable();
+    let mut segment = Segment {
+        at: frame.start,
+        level: i128::from(frame.initial),
+        slope: 0,
+        next: None,
+    };
+    if let Some(point) = groups.next_if(|point| point.at == frame.start) {
+        segment.level += point.step;
+        segment.slope = point.slope;
+    }
+
+    for point in groups {
+        segment.next = Some(point.at);
+        let flat_and_inside = segment.slope == 0
+            && targets.is_empty()
+            && broken_bound(frame.bounds, segment.level).is_none();
+        if !flat_and_inside {
+            if let Some(breach) = segment.first_breach(frame.bounds, &mut targets)? {
+                return Ok(Some(breach));
+            }
+        }
+
+        segment.level = segment
+            .level_at(point.at)?
+            .checked_add(point.step)
+            .ok_or(Error::Overflow)?;
+        segment.slope = segment
+            .slope
+            .checked_add(point.slope)
+            .ok_or(Error::Overflow)?;
+        segment.at = point.at;
+    }
+
+    segment.next = None;
+    segment.first_breach(frame.bounds, &mut targets)
+}
+
+impl Segment {
+    /// The first breach in this piece: at its first tick, on the line, or at a target.
+    ///
+    /// At the same tick a broken bound wins over a missed target.
+    fn first_breach(
+        &self,
+        bounds: Bounds,
+        targets: &mut &[Target],
+    ) -> Result<Option<Breach>, Error> {
+        if let Some(bound) = broken_bound(bounds, self.level) {
             return Ok(Some(Breach {
-                at: segment.at,
-                level: segment.level,
+                at: self.at,
+                level: self.level,
                 bound,
             }));
         }
 
-        let crossing = segment.crossing(frame.bounds)?;
-        let target = segment.missed_target(&mut targets)?;
-        let earliest = match (crossing, target) {
+        let crossing = self.crossing(bounds)?;
+        let target = self.missed_target(targets)?;
+        Ok(match (crossing, target) {
             (Some(crossing), Some(target)) if target.at < crossing.at => Some(target),
             (Some(crossing), _) => Some(crossing),
             (None, target) => target,
-        };
-        if earliest.is_some() {
-            return Ok(earliest);
+        })
+    }
+}
+
+/// Narrows `offsets` to the start offsets at which the level built from `base` and the
+/// tentative points stays valid, from the lines at offset 0 (`tentative[0]`) and 1
+/// (`tentative[1]`).
+///
+/// Each evaluated level (segment start, tick before the segment end, target) is affine in the
+/// offset; its value and coefficient are read off the two lines.
+///
+/// # Errors
+///
+/// [`Error::Overflow`] if a level exceeds `i128`.
+pub(crate) fn narrow(
+    frame: &Frame<'_>,
+    base: &[Point],
+    tentative: [&[Point]; 2],
+    offsets: &mut Offsets,
+) -> Result<(), Error> {
+    let (min, max) = (i128::from(frame.bounds.min), i128::from(frame.bounds.max));
+    let mut targets = frame.targets;
+    let first = Segments::new(frame, base, tentative[0]);
+    let second = Segments::new(frame, base, tentative[1]);
+    for (a, b) in first.zip(second) {
+        let (a, b) = (a?, b?);
+        debug_assert_eq!(
+            a.next.is_some(),
+            b.next.is_some(),
+            "segment structures differ"
+        );
+        offsets.keep(a.level, b.level - a.level, min, Some(max))?;
+        if let (Some(end_a), Some(end_b)) = (a.next, b.next) {
+            let (last_a, last_b) = (a.level_at(end_a - 1)?, b.level_at(end_b - 1)?);
+            offsets.keep(last_a, last_b - last_a, min, Some(max))?;
+        }
+
+        let inside = targets
+            .iter()
+            .take_while(|target| a.next.is_none_or(|next| target.at < next))
+            .count();
+        let (now, rest) = targets.split_at(inside);
+        targets = rest;
+        for target in now {
+            let (at_a, at_b) = (a.level_at(target.at)?, b.level_at(target.at)?);
+            offsets.keep(at_a, at_b - at_a, i128::from(target.min), None)?;
+        }
+
+        if offsets.is_empty() {
+            return Ok(());
         }
     }
 
-    Ok(None)
+    Ok(())
 }
 
 /// Merges two sorted point slices into one sorted sequence with one point per tick.
@@ -275,14 +385,15 @@ impl Iterator for Grouped<'_> {
 
 /// Moves all leading points of `points` at `net.at` into `net`.
 fn take_tick(points: &mut &[Point], net: &mut Point) {
-    let count = points.iter().take_while(|point| point.at == net.at).count();
-    let (now, rest) = points.split_at(count);
-    for point in now {
+    while let Some((point, rest)) = points.split_first() {
+        if point.at != net.at {
+            break;
+        }
+
         net.step += point.step;
         net.slope += point.slope;
+        *points = rest;
     }
-
-    *points = rest;
 }
 
 /// The bound that `level` breaks, if any.

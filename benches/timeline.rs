@@ -80,5 +80,49 @@ fn bench_earliest_start(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_first_violation, bench_earliest_start);
+/// Measures `earliest_start` with rates: a long drain that only fits once the battery has
+/// recharged, found by the closed-form solve per piece over a long window.
+fn bench_earliest_start_rates(c: &mut Criterion) {
+    let bounds = Bounds::new(0, 1_000_000).expect("valid");
+    let mut plan = Plan::new();
+    let battery = plan
+        .add_timeline(Timeline::depletable(0, 100, bounds, 64).expect("valid"))
+        .expect("memory");
+    let charge = [Demand::Level {
+        timeline: battery,
+        impact: Impact::Rate {
+            start: 0,
+            end: 100_000,
+            per_tick: 1,
+        },
+    }];
+    plan.place(ActivityId(0), 0, &charge).expect("valid");
+    let drain = [Demand::Level {
+        timeline: battery,
+        impact: Impact::Step {
+            at: 0,
+            delta: -60_000,
+        },
+    }];
+    let window = Window::new(0, 100_000).expect("valid");
+    c.bench_function("earliest_start/rates_long_window", |b| {
+        b.iter(|| black_box(&plan).earliest_start(black_box(&drain), window, 1_000));
+    });
+}
+
+/// Measures exporting the profile of the benchmark battery for telemetry.
+fn bench_export(c: &mut Criterion) {
+    let timeline = battery();
+    c.bench_function("export/500_activities", |b| {
+        b.iter(|| black_box(&timeline).export());
+    });
+}
+
+criterion_group!(
+    benches,
+    bench_first_violation,
+    bench_earliest_start,
+    bench_earliest_start_rates,
+    bench_export
+);
 criterion_main!(benches);

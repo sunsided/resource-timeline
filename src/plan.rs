@@ -16,6 +16,8 @@
 
 mod search;
 
+pub(crate) use search::Offsets;
+
 #[cfg(feature = "alloc")]
 use crate::storage::Heap;
 use crate::storage::{PlanStorage, Seq, Storage};
@@ -374,15 +376,20 @@ impl<P: PlanStorage> Plan<P> {
 
     /// The earliest start in `window` at which [`fits`](Self::fits) holds, or `None`.
     ///
-    /// When neither the demands nor the touched timelines contain rates, the levels are
-    /// piecewise constant and the answer can only change where a demand tick meets a change
-    /// tick of its timeline. The search then checks only those candidate starts, `O(n k)` of
-    /// them for `n` change ticks and `k` demands, at `O(n)` each. With rates it checks every
-    /// tick of the window. Either way at most `max_checks` candidates are checked.
+    /// The answer can only change where a demand tick meets a change tick or target of its
+    /// timeline. The search walks the pieces between consecutive such candidates, `O(n k)` of
+    /// them for `n` change ticks and `k` demands, without collecting them. Without rates the
+    /// levels are piecewise constant and one check at the piece start decides the whole piece.
+    /// With rates (in the demands or a touched timeline) the levels are affine in the start
+    /// within a piece, and the earliest fitting start of the piece is solved in closed form
+    /// from two sweeps, so the cost does not grow with the window length. Each piece costs
+    /// `O(n k)`; nothing is allocated beyond the scratch reserved up front.
+    ///
+    /// `max_checks` caps the number of pieces examined.
     ///
     /// # Errors
     ///
-    /// - [`Error::SearchExhausted`] if `max_checks` candidates were checked without an answer.
+    /// - [`Error::SearchExhausted`] if `max_checks` pieces were examined without an answer.
     /// - The errors of [`fits`](Self::fits).
     pub fn earliest_start(
         &self,

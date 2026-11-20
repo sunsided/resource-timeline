@@ -337,9 +337,31 @@ impl<S: Storage> Timeline<S> {
 
     /// The ticks at which a check outcome can change: every change point and every target.
     /// Not sorted across the two kinds, possibly with duplicates.
+    #[cfg(feature = "alloc")]
     pub(crate) fn change_ticks(&self) -> impl Iterator<Item = Tick> + '_ {
         let points = self.profile.points().iter().map(|point| point.at);
         points.chain(self.targets.iter().map(|target| target.at))
+    }
+
+    /// The first tick `>= x` among the start, the change points and the targets, if any.
+    ///
+    /// Costs `O(log n)`.
+    pub(crate) fn first_change_from(&self, x: i128) -> Option<Tick> {
+        let points = self.profile.points();
+        let point = points.get(points.partition_point(|point| i128::from(point.at) < x));
+        let target = self.targets.get(
+            self.targets
+                .partition_point(|target| i128::from(target.at) < x),
+        );
+        let start = (i128::from(self.start) >= x).then_some(self.start);
+        [
+            start,
+            point.map(|point| point.at),
+            target.map(|target| target.at),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     /// `Ok` while the timeline has room for `extra` more impacts, by budget and by capacity.
@@ -476,6 +498,35 @@ impl<S: Storage> Timeline<S> {
         sweep::contributors::<S>(&self.impacts, t, bound)
     }
 
+    /// Narrows `offsets` to the start offsets `k` at which a tentative activity keeps this
+    /// timeline valid, given its change points `first` at offset 0 and `second` at offset 1.
+    ///
+    /// Both point lists must produce the same segment structure, so that every evaluated level
+    /// is affine in `k` (see the search module). Never allocates.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Overflow`] if a level exceeds `i128`.
+    pub(crate) fn narrow(
+        &self,
+        first: &[Point],
+        second: &[Point],
+        offsets: &mut crate::plan::Offsets,
+    ) -> Result<(), Error> {
+        let frame = self.frame();
+        sweep::narrow(&frame, self.profile.points(), [first, second], offsets)
+    }
+
+    /// The fixed parameters of a sweep over this timeline.
+    fn frame(&self) -> Frame<'_> {
+        Frame {
+            start: self.start,
+            initial: self.initial,
+            bounds: self.bounds,
+            targets: &self.targets,
+        }
+    }
+
     /// The first breach of the bounds if the change points `extra` were added.
     ///
     /// `extra` must be sorted by tick and must not reach before the start. Never allocates.
@@ -484,13 +535,7 @@ impl<S: Storage> Timeline<S> {
     ///
     /// [`Error::Overflow`] if a level along a rate segment exceeds `i128`.
     pub(crate) fn breach_with(&self, extra: &[Point]) -> Result<Option<Breach>, Error> {
-        let frame = Frame {
-            start: self.start,
-            initial: self.initial,
-            bounds: self.bounds,
-            targets: &self.targets,
-        };
-        sweep::first_breach(&frame, self.profile.points(), extra)
+        sweep::first_breach(&self.frame(), self.profile.points(), extra)
     }
 }
 

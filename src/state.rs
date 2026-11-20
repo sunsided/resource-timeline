@@ -315,15 +315,22 @@ impl<S: Storage> StateTimeline<S> {
         }
     }
 
-    /// The ticks at which the outcome of a check can change: the start, every set, and every
-    /// requirement start and end. Unsorted, possibly with duplicates.
-    pub(crate) fn change_ticks(&self) -> impl Iterator<Item = Tick> + '_ {
-        let sets = self.sets.iter().map(|set| set.at);
+    /// The first tick `>= x` at which the outcome of a check can change: the start, a set, or
+    /// a requirement start or end.
+    ///
+    /// Costs `O(log n)` for the sorted sets plus `O(r)` for `r` requirements.
+    pub(crate) fn first_change_from(&self, x: i128) -> Option<Tick> {
+        let set = self
+            .sets
+            .get(self.sets.partition_point(|set| i128::from(set.at) < x))
+            .map(|set| set.at);
         let requires = self
             .requires
             .iter()
-            .flat_map(|require| [require.start, require.end]);
-        core::iter::once(self.start).chain(sets).chain(requires)
+            .flat_map(|require| [require.start, require.end])
+            .filter(|&tick| i128::from(tick) >= x);
+        let start = (i128::from(self.start) >= x).then_some(self.start);
+        start.into_iter().chain(set).chain(requires).min()
     }
 
     /// `Ok` while the timeline has room for `extra` more impacts, by budget and by capacity.

@@ -83,6 +83,21 @@ pub fn demand(rates: bool) -> impl Strategy<Value = Demand> {
     ]
 }
 
+/// A demand with long, slow rates on the battery (or a claim on the channel, or a state
+/// impact), so that fitting starts often lie inside a piece rather than at its first tick.
+fn long_demand() -> impl Strategy<Value = Demand> {
+    let rate =
+        (0_i64..10, 5_i64..30, -3_i64..=3).prop_map(|(start, length, per_tick)| Demand::Level {
+            timeline: handles().0,
+            impact: Impact::Rate {
+                start,
+                end: start + length,
+                per_tick,
+            },
+        });
+    prop_oneof![3 => rate, 2 => demand(true)]
+}
+
 /// A violation-free plan built from random activities, keeping only those that fit.
 fn plan(rates: bool) -> impl Strategy<Value = Plan> {
     let activity = (0_i64..20, prop::collection::vec(demand(rates), 1..4));
@@ -136,6 +151,18 @@ proptest! {
         prop_assert_eq!(plan.earliest_start(&demands, window, 10_000), Ok(expected));
     }
 
+    /// Long rates and long windows: the closed-form solve per piece finds the same start as a
+    /// per-tick scan of `fits` and of the brute-force oracles, also for windows that begin
+    /// before the timeline start.
+    #[test]
+    fn closed_form_matches_scan(plan in plan(true), demands in prop::collection::vec(long_demand(), 1..4), from in -6_i64..4) {
+        let window = Window::new(from, 70).expect("valid");
+        let by_oracle = (from..=70).find(|&start| fits_by_scan(&plan, &demands, start));
+        let by_fits = (from..=70).find(|&start| plan.fits(&demands, start) == Ok(true));
+        prop_assert_eq!(by_fits, by_oracle);
+        prop_assert_eq!(plan.earliest_start(&demands, window, 10_000), Ok(by_oracle));
+    }
+
     /// `fits` agrees with the oracles at every start.
     #[test]
     fn fits_matches_scan(plan in plan(true), demands in prop::collection::vec(demand(true), 1..4), start in -2_i64..30) {
@@ -184,7 +211,8 @@ fn place_is_atomic() {
     );
 }
 
-/// The search budget is enforced.
+/// The search budget caps the pieces examined, and a long window with rates costs a few
+/// pieces, not one check per tick.
 #[test]
 fn search_budget() {
     let (plan, (battery, _, _)) = empty_plan();
@@ -196,12 +224,15 @@ fn search_budget() {
             per_tick: -1,
         },
     }];
-    let window = Window::new(-100, 100).expect("valid");
+    // Draining 10 from 8 breaks the reserve at any start. The window is clipped to the timeline
+    // start; the drain's ticks 0 and 10 meet the start and the end-of-sol target at 25 (or pass
+    // them) at starts 0, 1, 15, 16, 25 and 26, so six pieces cover a million ticks.
+    let window = Window::new(-100, 1_000_000).expect("valid");
     assert_eq!(
-        plan.earliest_start(&drain, window, 50),
-        Err(Error::SearchExhausted { checks: 50 })
+        plan.earliest_start(&drain, window, 2),
+        Err(Error::SearchExhausted { checks: 2 })
     );
-    assert_eq!(plan.earliest_start(&drain, window, 101), Ok(None));
+    assert_eq!(plan.earliest_start(&drain, window, 6), Ok(None));
 
     // Short enough to keep the end-of-sol reserve.
     let short = [Demand::Level {

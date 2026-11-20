@@ -7,7 +7,20 @@
 //! each change tick `p` of the touched timeline. These comparisons change only at `s = p - o`
 //! (from less to equal) and `s = p - o + 1` (from equal to greater), so the answer is constant
 //! between consecutive candidates, and the earliest fitting start is the window start or one of
-//! them. Rates break this, because a level then also depends on the distance between ticks.
+//! them.
+//!
+//! # Closed form per piece with rates
+//!
+//! With rates a level also depends on the distance between ticks, so the answer may change
+//! inside a piece `[c_i, c_{i+1})` between consecutive candidates. The order of all ticks is
+//! still fixed there, so the merged level line has the same segments for every start `s` in the
+//! piece, and the level at each segment start, at the tick before each segment end and at each
+//! target is affine in `s` with an integer coefficient: a shifted point moves along a fixed
+//! line, a shifted rate changes its contribution to a fixed tick by its rate per tick. The
+//! activity fits at `s` if every such affine value lies within its bounds; the extremes of a
+//! linear segment are at its ends, so these values cover every tick. The search evaluates the
+//! line at `c_i` and `c_i + 1`, reads each value and its coefficient off the pair, and solves
+//! the inequalities for the earliest `s` in closed form, without checking `s` tick by tick.
 
 use super::{Demand, Plan};
 use crate::state::{Requirement, SetPoint};
@@ -26,6 +39,8 @@ pub(super) struct Probe<'a, P: PlanStorage> {
     demands: &'a [Demand],
     /// Change points of the shifted demands on the numeric timeline being checked.
     points: <Line<P> as Storage>::DoubleList<Point>,
+    /// The same change points for a start one tick later, for the closed-form solve.
+    points_next: <Line<P> as Storage>::DoubleList<Point>,
     /// Sets of the shifted demands on the state timeline being checked.
     sets: <Line<P> as Storage>::List<SetPoint>,
     /// Requirements of the shifted demands on the state timeline being checked.
@@ -58,13 +73,15 @@ impl<'a, P: PlanStorage> Probe<'a, P> {
             plan,
             demands,
             points: Seq::EMPTY,
+            points_next: Seq::EMPTY,
             sets: Seq::EMPTY,
             requires: Seq::EMPTY,
         };
         let most = most_on_one_timeline(demands);
-        probe
-            .points
-            .try_reserve(most.saturating_mul(2), Container::Scratch)?;
+        for points in [&mut probe.points, &mut probe.points_next] {
+            points.try_reserve(most.saturating_mul(2), Container::Scratch)?;
+        }
+
         probe.sets.try_reserve(most, Container::Scratch)?;
         probe.requires.try_reserve(most, Container::Scratch)?;
         Ok(probe)
@@ -76,11 +93,8 @@ impl<'a, P: PlanStorage> Probe<'a, P> {
     ///
     /// See [`Plan::fits`].
     pub(super) fn fits(&mut self, start: Tick) -> Result<bool, Error> {
-        for (index, demand) in self.demands.iter().enumerate() {
-            let first_on_timeline = !self.demands[..index]
-                .iter()
-                .any(|earlier| earlier.same_timeline(demand));
-            if first_on_timeline && !self.timeline_fits(demand, start)? {
+        for index in self.representatives() {
+            if !self.timeline_fits(&self.demands[index], start)? {
                 return Ok(false);
             }
         }
@@ -88,12 +102,86 @@ impl<'a, P: PlanStorage> Probe<'a, P> {
         Ok(true)
     }
 
+    /// The earliest start in `[lo, hi]` at which the activity fits, solved in closed form.
+    ///
+    /// Every start in `[lo, hi]` must be admissible and see the same order of demand ticks and
+    /// change ticks (a piece between consecutive search candidates); see the module docs. Never
+    /// allocates.
+    ///
+    /// # Errors
+    ///
+    /// See [`Plan::fits`].
+    fn earliest_in(&mut self, lo: Tick, hi: Tick) -> Result<Option<Tick>, Error> {
+        if lo == hi {
+            return Ok(self.fits(lo)?.then_some(lo));
+        }
+
+        let mut offsets = Offsets {
+            lo: 0,
+            hi: i128::from(hi) - i128::from(lo),
+        };
+        for index in self.representatives() {
+            let representative = self.demands[index];
+            let Demand::Level { timeline, .. } = representative else {
+                // The order of ticks fixes every state comparison, so one start decides.
+                if !self.timeline_fits(&representative, lo)? {
+                    return Ok(None);
+                }
+
+                continue;
+            };
+
+            let timeline = &self.plan.timelines[timeline.0];
+            let first = collect_points(
+                timeline,
+                self.demands,
+                &representative,
+                lo,
+                &mut self.points,
+            )?;
+            let second = collect_points(
+                timeline,
+                self.demands,
+                &representative,
+                lo + 1,
+                &mut self.points_next,
+            )?;
+            if !(first && second) {
+                return Ok(None);
+            }
+
+            timeline.narrow(&self.points, &self.points_next, &mut offsets)?;
+            if offsets.is_empty() {
+                return Ok(None);
+            }
+        }
+
+        let start = i128::from(lo) + offsets.lo;
+        Ok(Some(Tick::try_from(start).map_err(|_| Error::Overflow)?))
+    }
+
+    /// The indices of the first demand on each touched timeline.
+    fn representatives(&self) -> impl Iterator<Item = usize> + 'a {
+        let demands = self.demands;
+        (0..demands.len()).filter(move |&index| {
+            !demands[..index]
+                .iter()
+                .any(|earlier| earlier.same_timeline(&demands[index]))
+        })
+    }
+
     /// Whether the timeline of `representative` stays valid with all demands on it added.
     fn timeline_fits(&mut self, representative: &Demand, start: Tick) -> Result<bool, Error> {
         match *representative {
             Demand::Level { timeline, .. } => {
                 let timeline = &self.plan.timelines[timeline.0];
-                if !self.collect_points(representative, start)? {
+                if !collect_points(
+                    timeline,
+                    self.demands,
+                    representative,
+                    start,
+                    &mut self.points,
+                )? {
                     return Ok(false);
                 }
 
@@ -108,31 +196,6 @@ impl<'a, P: PlanStorage> Probe<'a, P> {
                 Ok(!timeline.is_violated_with(&self.sets, &self.requires))
             }
         }
-    }
-
-    /// Fills `points` with the shifted changes of all numeric demands on the timeline of
-    /// `representative`. Returns `false` if one of them would precede the timeline start.
-    fn collect_points(&mut self, representative: &Demand, start: Tick) -> Result<bool, Error> {
-        self.points.clear();
-        for demand in self.demands {
-            let Demand::Level { timeline, impact } = *demand else {
-                continue;
-            };
-            if !demand.same_timeline(representative) {
-                continue;
-            }
-
-            let Some(impact) = admissible(&self.plan.timelines[timeline.0], impact, start)? else {
-                return Ok(false);
-            };
-            for (at, step, slope) in impact.changes().into_iter().flatten() {
-                self.points
-                    .try_push(Point::loose(at, step, slope), Container::Scratch)?;
-            }
-        }
-
-        self.points.sort_unstable_by_key(|point| point.at);
-        Ok(true)
     }
 
     /// Fills `sets` and `requires` with the shifted state demands on the timeline of
@@ -192,6 +255,43 @@ impl<'a, P: PlanStorage> Probe<'a, P> {
     }
 }
 
+/// Fills `points` with the shifted changes of all numeric demands of `demands` on the timeline
+/// of `representative`, which is `timeline`, sorted by tick. Returns `false` if one of them
+/// would precede the timeline start.
+///
+/// # Errors
+///
+/// [`Error::Overflow`] if a shifted tick does not fit, the validation errors of
+/// [`Timeline::add`] other than [`Error::BeforeStart`], and capacity errors if `points` was not
+/// reserved.
+fn collect_points<S: Storage>(
+    timeline: &Timeline<S>,
+    demands: &[Demand],
+    representative: &Demand,
+    start: Tick,
+    points: &mut impl Seq<Point>,
+) -> Result<bool, Error> {
+    points.clear();
+    for demand in demands {
+        let Demand::Level { impact, .. } = *demand else {
+            continue;
+        };
+        if !demand.same_timeline(representative) {
+            continue;
+        }
+
+        let Some(impact) = admissible(timeline, impact, start)? else {
+            return Ok(false);
+        };
+        for (at, step, slope) in impact.changes().into_iter().flatten() {
+            points.try_push(Point::loose(at, step, slope), Container::Scratch)?;
+        }
+    }
+
+    points.sort_unstable_by_key(|point| point.at);
+    Ok(true)
+}
+
 /// The largest number of demands that address the same timeline.
 fn most_on_one_timeline(demands: &[Demand]) -> usize {
     demands
@@ -222,7 +322,7 @@ fn admissible<S: Storage>(
 }
 
 /// Finds the earliest start in `window` at which `demands` fit, checking at most `max_checks`
-/// candidates.
+/// pieces between consecutive candidates.
 pub(super) fn earliest_start<P: PlanStorage>(
     plan: &Plan<P>,
     demands: &[Demand],
@@ -230,42 +330,112 @@ pub(super) fn earliest_start<P: PlanStorage>(
     max_checks: usize,
 ) -> Result<Option<Tick>, Error> {
     let mut probe = Probe::new(plan, demands)?;
+    let Some(window) = admissible_window(plan, demands, window) else {
+        return Ok(None);
+    };
+
+    let rates = involves_rates(plan, demands);
     let mut checks = 0_usize;
-    let mut check = |start: Tick| -> Result<bool, Error> {
+    let mut piece = Some(window.earliest());
+    while let Some(lo) = piece {
         if checks == max_checks {
             return Err(Error::SearchExhausted { checks: max_checks });
         }
 
         checks += 1;
-        probe.fits(start)
-    };
-
-    let Some(window) = admissible_window(plan, demands, window) else {
-        return Ok(None);
-    };
-
-    if involves_rates(plan, demands) {
-        // shortcut: with rates every tick of the window is a candidate, so the cost grows with
-        // the window length; restrict candidates per linear piece if long windows matter.
-        for start in window.earliest()..=window.latest() {
-            if check(start)? {
-                return Ok(Some(start));
-            }
+        let next = next_candidate(plan, demands, lo, window);
+        let found = if rates {
+            let hi = next.map_or(window.latest(), |next| next - 1);
+            probe.earliest_in(lo, hi)?
+        } else {
+            probe.fits(lo)?.then_some(lo)
+        };
+        if found.is_some() {
+            return Ok(found);
         }
 
-        return Ok(None);
-    }
-
-    let mut start = Some(window.earliest());
-    while let Some(candidate) = start {
-        if check(candidate)? {
-            return Ok(Some(candidate));
-        }
-
-        start = next_candidate(plan, demands, candidate, window);
+        piece = next;
     }
 
     Ok(None)
+}
+
+/// A range `[lo, hi]` of start offsets from the first start of a piece. Empty if `lo > hi`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Offsets {
+    /// The smallest offset left.
+    pub(crate) lo: i128,
+    /// The largest offset left.
+    pub(crate) hi: i128,
+}
+
+impl Offsets {
+    /// Whether no offset is left.
+    pub(crate) const fn is_empty(&self) -> bool {
+        self.lo > self.hi
+    }
+
+    /// Keeps the offsets `k` with `min <= value + slope * k <= max` (no upper limit for
+    /// `max == None`).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Overflow`] if a difference of levels exceeds `i128`.
+    pub(crate) fn keep(
+        &mut self,
+        value: i128,
+        slope: i128,
+        min: i128,
+        max: Option<i128>,
+    ) -> Result<(), Error> {
+        let below_min = value < min;
+        let above_max = max.is_some_and(|max| value > max);
+        if slope == 0 {
+            if below_min || above_max {
+                self.hi = self.lo - 1;
+            }
+
+            return Ok(());
+        }
+
+        let room_min = min.checked_sub(value).ok_or(Error::Overflow)?;
+        let room_max = max
+            .map(|max| max.checked_sub(value).ok_or(Error::Overflow))
+            .transpose()?;
+        if slope > 0 {
+            self.lo = self.lo.max(ceil_div(room_min, slope));
+            if let Some(room) = room_max {
+                self.hi = self.hi.min(floor_div(room, slope));
+            }
+        } else {
+            self.hi = self.hi.min(floor_div(room_min, slope));
+            if let Some(room) = room_max {
+                self.lo = self.lo.max(ceil_div(room, slope));
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// `a / b` rounded towards negative infinity. `b` must not be zero.
+const fn floor_div(a: i128, b: i128) -> i128 {
+    let quotient = a / b;
+    if a % b != 0 && ((a < 0) != (b < 0)) {
+        quotient - 1
+    } else {
+        quotient
+    }
+}
+
+/// `a / b` rounded towards positive infinity. `b` must not be zero.
+const fn ceil_div(a: i128, b: i128) -> i128 {
+    let quotient = a / b;
+    if a % b != 0 && ((a < 0) == (b < 0)) {
+        quotient + 1
+    } else {
+        quotient
+    }
 }
 
 /// `window` without the starts at which a demand would precede its timeline's start, or
@@ -301,42 +471,82 @@ fn involves_rates<P: PlanStorage>(plan: &Plan<P>, demands: &[Demand]) -> bool {
 /// The smallest start in `window` after `after` where a demand tick meets a change tick of
 /// its timeline, or the tick after one, so that the comparison of the two changes.
 ///
-/// Enumerating candidates one at a time this way needs no memory. Each call costs `O(n k)` for
-/// `n` change ticks and `k` demands, the same order as checking one candidate.
+/// Enumerating candidates one at a time this way needs no memory. For a demand offset `o` the
+/// next meeting start is `p - o` for the first change tick `p >= after + o + 1`, and the next
+/// passing start `p - o + 1` for the first `p >= after + o`; sorted change ticks make each a
+/// binary search, so a call costs `O(k log n)` for `k` demands (plus the unsorted requirements
+/// of touched state timelines).
 fn next_candidate<P: PlanStorage>(
     plan: &Plan<P>,
     demands: &[Demand],
     after: Tick,
     window: Window,
 ) -> Option<Tick> {
-    let mut next: Option<Tick> = None;
-    let mut consider = |tick: Tick, offset: Tick| {
-        let meet = i128::from(tick) - i128::from(offset);
-        for start in [meet, meet + 1] {
-            let Ok(start) = Tick::try_from(start) else {
-                continue;
-            };
-
-            if start > after && window.contains(start) && next.is_none_or(|next| start < next) {
-                next = Some(start);
-            }
-        }
-    };
-
+    let mut next: Option<i128> = None;
     for demand in demands {
         for offset in demand.offsets() {
-            match *demand {
-                Demand::Level { timeline, .. } => {
-                    let timeline = &plan.timelines[timeline.0];
-                    let ticks = core::iter::once(timeline.start()).chain(timeline.change_ticks());
-                    ticks.for_each(|tick| consider(tick, offset));
+            let threshold = i128::from(after) + i128::from(offset);
+            let first_from = |x: i128| match *demand {
+                Demand::Level { timeline, .. } => plan.timelines[timeline.0].first_change_from(x),
+                Demand::State { timeline, .. } => plan.states[timeline.0].first_change_from(x),
+            };
+            let meet = first_from(threshold + 1).map(|p| i128::from(p) - i128::from(offset));
+            let pass = first_from(threshold).map(|p| i128::from(p) - i128::from(offset) + 1);
+            for start in [meet, pass].into_iter().flatten() {
+                if next.is_none_or(|next| start < next) {
+                    next = Some(start);
                 }
-                Demand::State { timeline, .. } => plan.states[timeline.0]
-                    .change_ticks()
-                    .for_each(|tick| consider(tick, offset)),
             }
         }
     }
 
-    next
+    let next = Tick::try_from(next?).ok()?;
+    window.contains(next).then_some(next)
+}
+
+#[cfg(test)]
+mod tests {
+    //! Brute-force checks of the closed-form helpers.
+
+    use super::{Offsets, ceil_div, floor_div};
+
+    /// Rounding division agrees with exact rational comparison for all small operands.
+    #[test]
+    fn rounding_division() {
+        for a in -20_i128..=20 {
+            for b in (-6_i128..=6).filter(|&b| b != 0) {
+                let floor = floor_div(a, b);
+                let ceil = ceil_div(a, b);
+                // floor * b <= a < (floor + 1) * b for b > 0, mirrored for b < 0.
+                if b > 0 {
+                    assert!(floor * b <= a && a < (floor + 1) * b, "floor {a}/{b}");
+                    assert!((ceil - 1) * b < a && a <= ceil * b, "ceil {a}/{b}");
+                } else {
+                    assert!(floor * b >= a && a > (floor + 1) * b, "floor {a}/{b}");
+                    assert!((ceil - 1) * b > a && a >= ceil * b, "ceil {a}/{b}");
+                }
+            }
+        }
+    }
+
+    /// `keep` leaves exactly the offsets whose affine value lies in the range.
+    #[test]
+    fn keep_matches_enumeration() {
+        for value in -8_i128..=8 {
+            for slope in -3_i128..=3 {
+                for max in [None, Some(2_i128), Some(5)] {
+                    let mut offsets = Offsets { lo: 0, hi: 6 };
+                    offsets.keep(value, slope, -1, max).expect("small");
+                    let expected = (0..=6).filter(|k| {
+                        let level = value + slope * k;
+                        level >= -1 && max.is_none_or(|max| level <= max)
+                    });
+                    assert!(
+                        (offsets.lo..=offsets.hi).eq(expected),
+                        "value {value} slope {slope} max {max:?}"
+                    );
+                }
+            }
+        }
+    }
 }
