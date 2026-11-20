@@ -201,8 +201,9 @@ pub trait PlanStorage: Clone + Copy + Debug + Default + Eq + Hash + sealed::Seal
 /// Heap storage: every container is a `Vec` that grows on demand.
 ///
 /// Growth is fallible: allocation failure is reported as [`Error::OutOfMemory`], never as an
-/// abort. This is the default storage of every type in the crate.
-#[cfg(feature = "alloc")]
+/// abort. This is the default storage of every type in the crate. It implements [`Storage`]
+/// and [`PlanStorage`] only with the `alloc` feature; without it the marker exists but cannot
+/// be used.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Heap;
 
@@ -223,7 +224,6 @@ pub struct Fixed<const N: usize>;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FixedPlan<const TIMELINES: usize, const STATES: usize, const N: usize>;
 
-#[cfg(feature = "alloc")]
 impl sealed::Sealed for Heap {}
 
 #[cfg(feature = "alloc")]

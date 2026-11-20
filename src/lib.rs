@@ -75,7 +75,29 @@
 //! Pre-release. See `docs/design.md` for the milestones. The API will change.
 //!
 //! Repository: <https://github.com/sunsided/resource-timeline>
-
+//!
+#![cfg_attr(
+    feature = "alloc",
+    doc = "[`greedy::schedule`]: crate::greedy::schedule"
+)]
+#![cfg_attr(not(feature = "alloc"), doc = "[`greedy::schedule`]: crate#features")]
+#![cfg_attr(
+    feature = "alloc",
+    doc = "[`envelope::Envelope`]: crate::envelope::Envelope"
+)]
+#![cfg_attr(not(feature = "alloc"), doc = "[`envelope::Envelope`]: crate#features")]
+#![cfg_attr(
+    feature = "alloc",
+    doc = "[`envelope::StateEnvelope`]: crate::envelope::StateEnvelope"
+)]
+#![cfg_attr(
+    not(feature = "alloc"),
+    doc = "[`envelope::StateEnvelope`]: crate#features"
+)]
+#![cfg_attr(feature = "alloc", doc = "[`envelope`]: crate::envelope")]
+#![cfg_attr(not(feature = "alloc"), doc = "[`envelope`]: crate#features")]
+#![cfg_attr(feature = "alloc", doc = "[`greedy`]: crate::greedy")]
+#![cfg_attr(not(feature = "alloc"), doc = "[`greedy`]: crate#features")]
 #![no_std]
 #![forbid(unsafe_code)]
 

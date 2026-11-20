@@ -177,8 +177,11 @@ impl Slot for Requirement {
 ///
 /// The storage `S` is [`Heap`](crate::storage::Heap) by default; with
 /// [`Fixed<N>`](crate::storage::Fixed) the timeline holds at most `N` impacts and never
-/// allocates. Heap timelines are created with [`new`](Self::new), timelines with any storage
+/// allocates. Heap timelines are created with [`new`], timelines with any storage
 /// with [`new_in`](Self::new_in).
+///
+#[cfg_attr(feature = "alloc", doc = "[`new`]: Self::new")]
+#[cfg_attr(not(feature = "alloc"), doc = "[`new`]: crate#features")]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StateTimeline<
     #[cfg(feature = "alloc")] S: Storage = Heap,
@@ -215,6 +218,9 @@ impl<S: Storage> StateTimeline<S> {
     /// As [`StateTimeline::new`], for any [`Storage`]. With
     /// [`Fixed<N>`](crate::storage::Fixed), adds beyond `N` impacts fail with
     /// [`Error::CapacityExceeded`] even if the budget is larger.
+    ///
+    #[cfg_attr(feature = "alloc", doc = "[`StateTimeline::new`]: StateTimeline::new")]
+    #[cfg_attr(not(feature = "alloc"), doc = "[`StateTimeline::new`]: crate#features")]
     #[must_use]
     pub const fn new_in(start: Tick, initial: StateValue, budget: usize) -> Self {
         Self {

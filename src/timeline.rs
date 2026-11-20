@@ -72,7 +72,7 @@ pub enum Kind {
 /// The storage `S` is [`Heap`](crate::storage::Heap) by default; with
 /// [`Fixed<N>`](crate::storage::Fixed) the timeline holds at most `N` impacts and never
 /// allocates (see [`storage`](crate::storage)). Heap timelines are created with
-/// [`depletable`](Self::depletable) and [`claimable`](Self::claimable), timelines with any
+/// [`depletable`] and [`claimable`], timelines with any
 /// storage with [`depletable_in`](Self::depletable_in) and [`claimable_in`](Self::claimable_in).
 ///
 /// The level starts at an initial value at the start tick and changes only through impacts. It
@@ -102,6 +102,11 @@ pub enum Kind {
 /// assert_eq!(battery.first_violation()?, None);
 /// # Ok::<(), resource_timeline::Error>(())
 /// ```
+///
+#[cfg_attr(feature = "alloc", doc = "[`depletable`]: Self::depletable")]
+#[cfg_attr(not(feature = "alloc"), doc = "[`depletable`]: crate#features")]
+#[cfg_attr(feature = "alloc", doc = "[`claimable`]: Self::claimable")]
+#[cfg_attr(not(feature = "alloc"), doc = "[`claimable`]: crate#features")]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Timeline<
     #[cfg(feature = "alloc")] S: Storage = Heap,
@@ -164,6 +169,15 @@ impl<S: Storage> Timeline<S> {
     /// a `budget` above `N` is allowed, but adds beyond `N` fail with
     /// [`Error::CapacityExceeded`].
     ///
+    #[cfg_attr(
+        feature = "alloc",
+        doc = "[`Timeline::depletable`]: Timeline::depletable"
+    )]
+    #[cfg_attr(
+        not(feature = "alloc"),
+        doc = "[`Timeline::depletable`]: crate#features"
+    )]
+    ///
     /// # Errors
     ///
     /// Never fails today; returns `Result` so later validation does not break callers.
@@ -190,6 +204,15 @@ impl<S: Storage> Timeline<S> {
     /// Creates a timeline with storage `S` for a claimable resource with `capacity` units.
     ///
     /// As [`Timeline::claimable`], for any [`Storage`].
+    ///
+    #[cfg_attr(
+        feature = "alloc",
+        doc = "[`Timeline::claimable`]: Timeline::claimable"
+    )]
+    #[cfg_attr(
+        not(feature = "alloc"),
+        doc = "[`Timeline::claimable`]: crate#features"
+    )]
     ///
     /// # Errors
     ///
