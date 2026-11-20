@@ -1,8 +1,9 @@
 //! The sweep that finds the first bound violation of a timeline.
 //!
-//! The sweep walks the sorted change points once. Between two change points the level is
-//! linear, so the first out-of-bounds tick of a segment is either its first tick or the tick at
-//! which the line crosses a bound, which integer division finds directly.
+//! The sweep walks the sorted change points once, as a sequence of linear [`Segment`]s.
+//! Within a segment the first out-of-bounds tick is either its first tick or the tick at which
+//! the line crosses a bound, which integer division finds directly; end-state targets inside
+//! the segment are evaluated on the line.
 //!
 //! ```mermaid
 //! graph LR
@@ -14,7 +15,7 @@
 use super::Bounds;
 use super::profile::Point;
 use crate::storage::{Seq, Storage};
-use crate::{ActivityId, Bound, Container, Error, Impact, Level, Tick, Violation};
+use crate::{ActivityId, Bound, Container, Error, Impact, Level, Target, Tick, Violation};
 
 /// The first out-of-bounds tick of a timeline, before it is explained.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,94 +30,55 @@ pub(crate) struct Breach {
 
 /// The fixed parameters of a sweep: where it starts, from which level, against which bounds.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Frame {
+pub(crate) struct Frame<'a> {
     /// The first tick of the timeline.
     pub(crate) start: Tick,
     /// The level at `start` before changes at `start` apply.
     pub(crate) initial: Level,
     /// The range the level must stay in.
     pub(crate) bounds: Bounds,
+    /// The end-state targets, sorted by [`Target::key`], none before `start`.
+    pub(crate) targets: &'a [Target],
 }
 
-/// The level and slope at the tick the sweep has reached.
-#[derive(Debug, Clone, Copy)]
-struct Cursor {
-    /// The tick the sweep has reached. All changes at this tick are applied.
-    at: Tick,
+/// One linear piece of the level: from a change point up to the next one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Segment {
+    /// The first tick of the piece. All changes at this tick are applied.
+    pub(crate) at: Tick,
     /// The level at `at`.
-    level: i128,
-    /// The level change per tick after `at`, until the next change point.
-    slope: i128,
+    pub(crate) level: i128,
+    /// The level change per tick after `at`, until `next`.
+    pub(crate) slope: i128,
+    /// The tick of the next change point, or `None` for the last piece, which lasts forever
+    /// with slope zero (every rate ends).
+    pub(crate) next: Option<Tick>,
 }
 
-/// Finds the first tick at which the level built from `base` and `extra` leaves `frame.bounds`.
-///
-/// Both slices must be sorted by tick and must not contain ticks before `frame.start`. `base`
-/// is the timeline profile, `extra` holds the points of tentatively added impacts; points of
-/// both at the same tick are netted.
-///
-/// # Errors
-///
-/// [`Error::Overflow`] if a level along a rate segment exceeds `i128`.
-pub(crate) fn first_breach(
-    frame: Frame,
-    base: &[Point],
-    extra: &[Point],
-) -> Result<Option<Breach>, Error> {
-    let mut groups = Grouped { base, extra }.peekable();
-    let mut cursor = Cursor {
-        at: frame.start,
-        level: i128::from(frame.initial),
-        slope: 0,
-    };
-    if let Some(first) = groups.next_if(|point| point.at == frame.start) {
-        cursor.apply(first)?;
-    }
-
-    if let Some(bound) = broken_bound(frame.bounds, cursor.level) {
-        return Ok(Some(cursor.breach(bound)));
-    }
-
-    for point in groups {
-        if let Some(breach) = cursor.crossing_before(point.at, frame.bounds)? {
-            return Ok(Some(breach));
-        }
-
-        cursor.advance_to(point.at)?;
-        cursor.apply(point)?;
-        if let Some(bound) = broken_bound(frame.bounds, cursor.level) {
-            return Ok(Some(cursor.breach(bound)));
-        }
-    }
-
-    Ok(None)
-}
-
-impl Cursor {
-    /// Applies the changes of `point`, which lies at the cursor's tick.
-    fn apply(&mut self, point: Point) -> Result<(), Error> {
-        self.level = self.level.checked_add(point.step).ok_or(Error::Overflow)?;
-        self.slope = self.slope.checked_add(point.slope).ok_or(Error::Overflow)?;
-        Ok(())
-    }
-
-    /// Moves the cursor to tick `to` along the current slope, before changes at `to` apply.
-    fn advance_to(&mut self, to: Tick) -> Result<(), Error> {
-        let elapsed = i128::from(to) - i128::from(self.at);
-        self.level = self
-            .slope
+impl Segment {
+    /// The level at `t`, which must lie in the piece.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Overflow`] if the level exceeds `i128`.
+    pub(crate) fn level_at(&self, t: Tick) -> Result<i128, Error> {
+        let elapsed = i128::from(t) - i128::from(self.at);
+        self.slope
             .checked_mul(elapsed)
             .and_then(|change| self.level.checked_add(change))
-            .ok_or(Error::Overflow)?;
-        self.at = to;
-        Ok(())
+            .ok_or(Error::Overflow)
     }
 
-    /// The first tick strictly between the cursor and `next` at which the line crosses a bound.
+    /// The first tick strictly inside the piece at which the line crosses a bound.
     ///
-    /// The level at the cursor is in bounds. The line is checked up to `next - 1`; the level at
-    /// `next` includes the changes there and is checked separately.
-    fn crossing_before(&self, next: Tick, bounds: Bounds) -> Result<Option<Breach>, Error> {
+    /// The level at `at` is in bounds. The line is checked up to the tick before `next`; the
+    /// level at `next` includes the changes there and belongs to the next piece.
+    fn crossing(&self, bounds: Bounds) -> Result<Option<Breach>, Error> {
+        let Some(next) = self.next else {
+            debug_assert_eq!(self.slope, 0, "the last piece has a slope");
+            return Ok(None);
+        };
+
         let last = i128::from(next) - 1 - i128::from(self.at);
         if self.slope == 0 || last < 1 {
             return Ok(None);
@@ -145,14 +107,150 @@ impl Cursor {
         Ok(Some(Breach { at, level, bound }))
     }
 
-    /// A breach at the cursor's tick and level.
-    const fn breach(&self, bound: Bound) -> Breach {
-        Breach {
-            at: self.at,
-            level: self.level,
-            bound,
+    /// The first missed target in the piece, consuming the targets before `next` from the
+    /// front of `targets`.
+    fn missed_target(&self, targets: &mut &[Target]) -> Result<Option<Breach>, Error> {
+        let inside = targets
+            .iter()
+            .take_while(|target| self.next.is_none_or(|next| target.at < next))
+            .count();
+        let (now, rest) = targets.split_at(inside);
+        *targets = rest;
+
+        for target in now {
+            let level = self.level_at(target.at)?;
+            if level < i128::from(target.min) {
+                return Ok(Some(Breach {
+                    at: target.at,
+                    level,
+                    bound: Bound::BelowTarget(target.min),
+                }));
+            }
+        }
+
+        Ok(None)
+    }
+}
+
+/// The pieces of the level built from a frame and two sorted point slices, in time order.
+///
+/// The first piece starts at the frame start with the changes there applied.
+pub(crate) struct Segments<'a> {
+    /// The merged change points not yet reached.
+    groups: core::iter::Peekable<Grouped<'a>>,
+    /// The piece to yield next, `None` once the last piece was yielded.
+    current: Option<Segment>,
+}
+
+impl<'a> Segments<'a> {
+    /// The pieces of the level that starts at `frame` and changes at `base` and `extra`.
+    ///
+    /// Both slices must be sorted by tick and must not contain ticks before `frame.start`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Overflow`] if the level at the start exceeds `i128`.
+    pub(crate) fn new(
+        frame: &Frame<'_>,
+        base: &'a [Point],
+        extra: &'a [Point],
+    ) -> Result<Self, Error> {
+        let mut groups = Grouped { base, extra }.peekable();
+        let mut first = Segment {
+            at: frame.start,
+            level: i128::from(frame.initial),
+            slope: 0,
+            next: None,
+        };
+        if let Some(point) = groups.next_if(|point| point.at == frame.start) {
+            first.level = first.level.checked_add(point.step).ok_or(Error::Overflow)?;
+            first.slope = point.slope;
+        }
+
+        first.next = groups.peek().map(|point| point.at);
+        Ok(Self {
+            groups,
+            current: Some(first),
+        })
+    }
+
+    /// The piece after `segment`, which starts at the next change point.
+    fn successor(&mut self, segment: &Segment) -> Result<Option<Segment>, Error> {
+        let Some(point) = self.groups.next() else {
+            return Ok(None);
+        };
+
+        let level = segment
+            .level_at(point.at)?
+            .checked_add(point.step)
+            .ok_or(Error::Overflow)?;
+        let slope = segment
+            .slope
+            .checked_add(point.slope)
+            .ok_or(Error::Overflow)?;
+        Ok(Some(Segment {
+            at: point.at,
+            level,
+            slope,
+            next: self.groups.peek().map(|point| point.at),
+        }))
+    }
+}
+
+impl Iterator for Segments<'_> {
+    type Item = Result<Segment, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let segment = self.current.take()?;
+        match self.successor(&segment) {
+            Ok(next) => self.current = next,
+            Err(error) => return Some(Err(error)),
+        }
+
+        Some(Ok(segment))
+    }
+}
+
+/// Finds the first tick at which the level built from `base` and `extra` leaves
+/// `frame.bounds` or misses a target.
+///
+/// Both slices must be sorted by tick and must not contain ticks before `frame.start`. `base`
+/// is the timeline profile, `extra` holds the points of tentatively added impacts; points of
+/// both at the same tick are netted. At the same tick a broken bound is reported before a
+/// missed target.
+///
+/// # Errors
+///
+/// [`Error::Overflow`] if a level along a rate segment exceeds `i128`.
+pub(crate) fn first_breach(
+    frame: &Frame<'_>,
+    base: &[Point],
+    extra: &[Point],
+) -> Result<Option<Breach>, Error> {
+    let mut targets = frame.targets;
+    for segment in Segments::new(frame, base, extra)? {
+        let segment = segment?;
+        if let Some(bound) = broken_bound(frame.bounds, segment.level) {
+            return Ok(Some(Breach {
+                at: segment.at,
+                level: segment.level,
+                bound,
+            }));
+        }
+
+        let crossing = segment.crossing(frame.bounds)?;
+        let target = segment.missed_target(&mut targets)?;
+        let earliest = match (crossing, target) {
+            (Some(crossing), Some(target)) if target.at < crossing.at => Some(target),
+            (Some(crossing), _) => Some(crossing),
+            (None, target) => target,
+        };
+        if earliest.is_some() {
+            return Ok(earliest);
         }
     }
+
+    Ok(None)
 }
 
 /// Merges two sorted point slices into one sorted sequence with one point per tick.
@@ -242,15 +340,11 @@ pub(crate) fn contributors<S: Storage>(
     bound: Bound,
 ) -> Result<S::List<ActivityId>, Error> {
     let net = net_per_activity::<S>(impacts, at)?;
-    let pushes = |effect: i128| match bound {
-        Bound::BelowMin(_) => effect < 0,
-        Bound::AboveMax(_) => effect > 0,
-    };
 
     let mut activities = <S::List<ActivityId> as Seq<_>>::EMPTY;
     activities.try_reserve(net.len(), Container::Contributors)?;
     for &(activity, effect) in net.iter() {
-        if pushes(effect) {
+        if bound.is_pushed_by(effect) {
             activities.try_push(activity, Container::Contributors)?;
         }
     }

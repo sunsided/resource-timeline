@@ -11,7 +11,7 @@
 //!   [`Impact::Claim`] for a half-open interval and returned afterwards.
 //!
 //! [`Timeline::first_violation`] reports the first tick at which the level leaves its
-//! `[min, max]` [`Bounds`], with the activities responsible. A [`StateTimeline`] does the same
+//! `[min, max]` [`Bounds`] or misses an end-state [`Target`], with the activities responsible. A [`StateTimeline`] does the same
 //! for discrete states such as instrument modes and comm visibility windows.
 //!
 //! On top of single timelines:
@@ -84,6 +84,7 @@ mod impact;
 mod plan;
 mod state;
 pub mod storage;
+mod target;
 mod timeline;
 mod violation;
 mod window;
@@ -93,6 +94,7 @@ pub use error::{Container, Error};
 pub use impact::Impact;
 pub use plan::{Demand, Plan, PlanViolation, StateId, TimelineId};
 pub use state::{StateImpact, StateTimeline, StateValue, StateViolation};
+pub use target::Target;
 pub use timeline::{Bounds, Kind, Timeline};
 pub use violation::{Bound, Violation};
 pub use window::Window;

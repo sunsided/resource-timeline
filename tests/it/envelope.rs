@@ -252,3 +252,39 @@ fn generators_cover_all_verdicts() {
         "{safe} {possible} {certain}"
     );
 }
+
+/// End-state targets take part in envelope checks: possibly or certainly missed.
+#[test]
+fn envelope_checks_targets() {
+    use resource_timeline::Target;
+
+    let bounds = Bounds::new(0, 100).expect("valid");
+    let mut battery = Timeline::depletable(0, 10, bounds, 8).expect("valid");
+    battery
+        .add_target(Target { at: 20, min: 5 })
+        .expect("valid");
+    let heat = [Impact::Step { at: 0, delta: -6 }];
+    let flexible = |latest| {
+        [Flexible {
+            activity: ActivityId(1),
+            window: Window::new(0, latest).expect("valid"),
+            impacts: &heat,
+        }]
+    };
+
+    let late = flexible(30);
+    match Envelope::new(&battery, &late).expect("valid").check() {
+        Ok(Verdict::Possible(violation)) => {
+            assert_eq!((violation.at, violation.level), (20, 4));
+            assert_eq!(violation.bound, Bound::BelowTarget(5));
+            assert_eq!(violation.contributors, [ActivityId(1)]);
+        }
+        verdict => panic!("unexpected {verdict:?}"),
+    }
+
+    let early = flexible(10);
+    match Envelope::new(&battery, &early).expect("valid").check() {
+        Ok(Verdict::Certain(violation)) => assert_eq!(violation.bound, Bound::BelowTarget(5)),
+        verdict => panic!("unexpected {verdict:?}"),
+    }
+}

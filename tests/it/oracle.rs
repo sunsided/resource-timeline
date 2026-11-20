@@ -35,8 +35,10 @@ pub fn effect(impact: Impact, t: Tick) -> i128 {
     }
 }
 
-/// The last tick at which any impact changes the level, or the start tick if there is none.
+/// The last tick at which any impact changes the level or a target is checked, or the start
+/// tick if there is none.
 fn last_change(timeline: &Timeline) -> Tick {
+    let targets = timeline.targets().iter().map(|target| target.at);
     timeline
         .impacts()
         .iter()
@@ -44,6 +46,7 @@ fn last_change(timeline: &Timeline) -> Tick {
             Impact::Step { at, .. } => at,
             Impact::Claim { end, .. } | Impact::Rate { end, .. } => end,
         })
+        .chain(targets)
         .fold(timeline.start(), Tick::max)
 }
 
@@ -54,16 +57,24 @@ pub fn first_violation(timeline: &Timeline) -> Option<Violation> {
     (timeline.start()..=last_change(timeline)).find_map(|t| violation_at(timeline, t))
 }
 
-/// The violation at tick `t`, if the level is out of bounds there.
+/// The violation at tick `t`, if the level is out of bounds there or misses a target at `t`.
+///
+/// A broken bound wins over a missed target; among missed targets the strictest wins.
 fn violation_at(timeline: &Timeline, t: Tick) -> Option<Violation> {
     let level = level_at(timeline, t);
     let bounds = timeline.bounds();
+    let strictest_missed = timeline
+        .targets()
+        .iter()
+        .filter(|target| target.at == t && level < i128::from(target.min))
+        .map(|target| target.min)
+        .max();
     let bound = if level < i128::from(bounds.min()) {
         Bound::BelowMin(bounds.min())
     } else if level > i128::from(bounds.max()) {
         Bound::AboveMax(bounds.max())
     } else {
-        return None;
+        Bound::BelowTarget(strictest_missed?)
     };
 
     Some(Violation {
@@ -85,7 +96,7 @@ fn contributors(timeline: &Timeline, t: Tick, bound: Bound) -> Vec<ActivityId> {
         .filter(|&activity| {
             let effect = net_effect(timeline, activity, t);
             match bound {
-                Bound::BelowMin(_) => effect < 0,
+                Bound::BelowMin(_) | Bound::BelowTarget(_) => effect < 0,
                 Bound::AboveMax(_) => effect > 0,
             }
         })

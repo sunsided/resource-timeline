@@ -1,7 +1,7 @@
 //! Property tests: the sweep agrees with the tick-by-tick oracle.
 
 use proptest::prelude::*;
-use resource_timeline::{ActivityId, Bounds, Impact, Timeline};
+use resource_timeline::{ActivityId, Bounds, Impact, Target, Timeline};
 
 use crate::oracle;
 
@@ -66,7 +66,28 @@ pub fn with_impacts(mut timeline: Timeline, impacts: &[(ActivityId, Impact)]) ->
     timeline
 }
 
+/// A depletable timeline with up to three end-state targets, some of them strict enough to
+/// fail, others at ticks without any change point.
+fn with_targets() -> impl Strategy<Value = Timeline> {
+    let target = (0_i64..30, -4_i64..=14).prop_map(|(offset, min)| (offset, min));
+    (depletable(), prop::collection::vec(target, 0..4)).prop_map(|(mut timeline, targets)| {
+        for (offset, min) in targets {
+            let at = timeline.start() + offset;
+            timeline.add_target(Target { at, min }).expect("valid");
+        }
+
+        timeline
+    })
+}
+
 proptest! {
+    /// End-state targets are reported like the oracle reports them: earliest tick first, a
+    /// broken bound before a missed target, the strictest missed target at a tick.
+    #[test]
+    fn targets_match_oracle(timeline in with_targets()) {
+        prop_assert_eq!(timeline.first_violation().expect("no overflow"), oracle::first_violation(&timeline));
+    }
+
     /// Depletable timelines report the same first violation as the oracle.
     #[test]
     fn depletable_matches_oracle(timeline in depletable()) {

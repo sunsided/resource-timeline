@@ -11,7 +11,7 @@ use resource_timeline::{
     StateTimeline, StateViolation, Timeline, Violation, Window,
 };
 
-use crate::plan::{demand, empty_plan};
+use crate::plan::{END_OF_SOL, demand, empty_plan};
 use crate::properties::owned_impact;
 
 /// Capacity of the fixed timelines under test.
@@ -95,7 +95,8 @@ proptest! {
         let (mut heap, _) = empty_plan();
         let mut fixed = Plan::<FixedPlan<2, 1, 16>>::new_in();
         let bounds = Bounds::new(0, 12).expect("valid");
-        fixed.add_timeline(Timeline::depletable_in(0, 8, bounds, 256).expect("valid")).expect("room");
+        let battery = fixed.add_timeline(Timeline::depletable_in(0, 8, bounds, 256).expect("valid")).expect("room");
+        fixed.add_target(battery, END_OF_SOL).expect("room");
         fixed.add_timeline(Timeline::claimable_in(0, 2, 256).expect("valid")).expect("room");
         fixed.add_state(StateTimeline::new_in(0, 0, 256)).expect("room");
 

@@ -2,8 +2,8 @@
 
 use proptest::prelude::*;
 use resource_timeline::{
-    ActivityId, Bounds, Demand, Error, Impact, Plan, StateId, StateImpact, StateTimeline, Tick,
-    Timeline, TimelineId, Window,
+    ActivityId, Bounds, Demand, Error, Impact, Plan, StateId, StateImpact, StateTimeline, Target,
+    Tick, Timeline, TimelineId, Window,
 };
 
 use crate::{oracle, state};
@@ -14,13 +14,18 @@ const PROBE: ActivityId = ActivityId(99);
 /// The handles of the battery, channel and state timelines of [`empty_plan`].
 pub type Handles = (TimelineId, TimelineId, StateId);
 
-/// A plan with a battery (`[0, 12]`, starting at 8), a capacity-2 channel and a 3-valued state.
+/// The end-state target of the battery in [`empty_plan`]: at least 4 units at tick 25.
+pub const END_OF_SOL: Target = Target { at: 25, min: 4 };
+
+/// A plan with a battery (`[0, 12]`, starting at 8, [`END_OF_SOL`]), a capacity-2 channel and a
+/// 3-valued state.
 pub fn empty_plan() -> (Plan, Handles) {
     let mut plan = Plan::new();
     let bounds = Bounds::new(0, 12).expect("valid");
     let battery = plan
         .add_timeline(Timeline::depletable(0, 8, bounds, 256).expect("valid"))
         .expect("memory");
+    plan.add_target(battery, END_OF_SOL).expect("valid");
     let channel = plan
         .add_timeline(Timeline::claimable(0, 2, 256).expect("valid"))
         .expect("memory");
@@ -198,11 +203,12 @@ fn search_budget() {
     );
     assert_eq!(plan.earliest_start(&drain, window, 101), Ok(None));
 
+    // Short enough to keep the end-of-sol reserve.
     let short = [Demand::Level {
         timeline: battery,
         impact: Impact::Rate {
             start: 0,
-            end: 5,
+            end: 4,
             per_tick: -1,
         },
     }];
@@ -236,4 +242,22 @@ fn search_generators_cover_outcomes() {
 
     assert!(delayed > total / 20, "too few delayed starts: {delayed}");
     assert!(missed > total / 20, "too few misses: {missed}");
+}
+
+/// The search skips starts that would miss an end-state target, and a plan rejects unknown
+/// timelines for targets.
+#[test]
+fn search_respects_targets() {
+    let (plan, (battery, _, _)) = empty_plan();
+    // Draining 5 units leaves 3 < 4 at tick 25 unless the drain starts after 25.
+    let drain = [Demand::Level {
+        timeline: battery,
+        impact: Impact::Step { at: 0, delta: -5 },
+    }];
+    let window = Window::new(0, 40).expect("valid");
+    assert_eq!(plan.earliest_start(&drain, window, 100), Ok(Some(26)));
+    assert_eq!(plan.fits(&drain, 25), Ok(false));
+
+    let unknown = Plan::new().add_target(battery, END_OF_SOL);
+    assert_eq!(unknown, Err(Error::UnknownResource));
 }

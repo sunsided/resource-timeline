@@ -6,7 +6,7 @@ pub(crate) mod sweep;
 #[cfg(feature = "alloc")]
 use crate::storage::Heap;
 use crate::storage::{Seq, Slot, Storage};
-use crate::{ActivityId, Container, Error, Impact, Level, Tick, Violation};
+use crate::{ActivityId, Container, Error, Impact, Level, Target, Tick, Violation};
 use profile::{Point, Profile};
 use sweep::{Breach, Frame};
 
@@ -120,6 +120,8 @@ pub struct Timeline<
     impacts: S::List<(ActivityId, Impact)>,
     /// The change points of all impacts, kept in sync with `impacts`.
     profile: Profile<S>,
+    /// The end-state targets, sorted by [`Target::key`]. None before `start`.
+    targets: S::List<Target>,
 }
 
 #[cfg(feature = "alloc")]
@@ -208,6 +210,7 @@ impl<S: Storage> Timeline<S> {
             budget,
             impacts: <S::List<(ActivityId, Impact)> as Seq<_>>::EMPTY,
             profile: Profile::EMPTY,
+            targets: <S::List<Target> as Seq<_>>::EMPTY,
         }
     }
 
@@ -286,6 +289,44 @@ impl<S: Storage> Timeline<S> {
         before - self.impacts.len()
     }
 
+    /// Requires the level at `target.at` to be at least `target.min`.
+    ///
+    /// Targets do not count against the impact budget. Several targets may share a tick; the
+    /// strictest one is reported first. See [`Target`] for an example.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::BeforeStart`] if the target precedes the timeline start.
+    /// - [`Error::OutOfMemory`] if the target list cannot grow (heap storage).
+    /// - [`Error::CapacityExceeded`] naming [`Container::Targets`] if it is full (fixed
+    ///   storage).
+    pub fn add_target(&mut self, target: Target) -> Result<(), Error> {
+        if target.at < self.start {
+            return Err(Error::BeforeStart {
+                at: target.at,
+                start: self.start,
+            });
+        }
+
+        let index = self
+            .targets
+            .partition_point(|other| other.key() <= target.key());
+        self.targets.try_insert(index, target, Container::Targets)
+    }
+
+    /// The end-state targets, sorted by tick and, within a tick, strictest first.
+    #[must_use]
+    pub fn targets(&self) -> &[Target] {
+        &self.targets
+    }
+
+    /// Removes every target at tick `at` and returns how many there were. Never allocates.
+    pub fn remove_targets_at(&mut self, at: Tick) -> usize {
+        let before = self.targets.len();
+        self.targets.retain(|target| target.at != at);
+        before - self.targets.len()
+    }
+
     /// Removes the most recently added impact, if any. Never allocates.
     pub(crate) fn undo_last(&mut self) {
         if let Some((_, impact)) = self.impacts.pop() {
@@ -293,9 +334,11 @@ impl<S: Storage> Timeline<S> {
         }
     }
 
-    /// The ticks of all change points, sorted ascending.
+    /// The ticks at which a check outcome can change: every change point and every target.
+    /// Not sorted across the two kinds, possibly with duplicates.
     pub(crate) fn change_ticks(&self) -> impl Iterator<Item = Tick> + '_ {
-        self.profile.points().iter().map(|point| point.at)
+        let points = self.profile.points().iter().map(|point| point.at);
+        points.chain(self.targets.iter().map(|target| target.at))
     }
 
     /// `Ok` while the timeline has room for `extra` more impacts, by budget and by capacity.
@@ -391,8 +434,10 @@ impl<S: Storage> Timeline<S> {
         self.profile.has_slope()
     }
 
-    /// Finds the earliest tick at which the level is outside the bounds.
+    /// Finds the earliest tick at which the level is outside the bounds or misses a
+    /// [`Target`].
     ///
+    /// At the same tick, a broken bound is reported before a missed target.
     /// All impacts at a tick are netted before the level is compared, so a claim ending at `t`
     /// and another starting at `t` never overlap. Along a rate the exact crossing tick is
     /// found by integer division, not by stepping tick by tick. Runs in `O(n)` time over the
@@ -442,8 +487,9 @@ impl<S: Storage> Timeline<S> {
             start: self.start,
             initial: self.initial,
             bounds: self.bounds,
+            targets: &self.targets,
         };
-        sweep::first_breach(frame, self.profile.points(), extra)
+        sweep::first_breach(&frame, self.profile.points(), extra)
     }
 }
 

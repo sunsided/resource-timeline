@@ -178,7 +178,7 @@ impl<'a, S: Storage> Envelope<'a, S> {
         self.level_at(t, Extreme::Upper)
     }
 
-    /// Checks the envelopes against the timeline's bounds.
+    /// Checks the envelopes against the timeline's bounds and end-state targets.
     ///
     /// The envelopes are evaluated at every tick where their shape can change and at the tick
     /// before. Without rates they are constant in between, so the reported tick is the
@@ -193,30 +193,36 @@ impl<'a, S: Storage> Envelope<'a, S> {
     /// - [`Error::Overflow`] if an envelope value does not fit a [`Level`].
     /// - [`Error::OutOfMemory`] if the evaluation ticks cannot be allocated.
     pub fn check(&self) -> Result<Verdict, Error> {
-        let bounds = self.timeline.bounds();
         let mut possible = None;
         for t in self.evaluation_ticks()? {
             let (lower, upper) = (self.lower_at(t)?, self.upper_at(t)?);
-            if upper < bounds.min() || lower > bounds.max() {
-                let (level, bound) = if upper < bounds.min() {
-                    (upper, Bound::BelowMin(bounds.min()))
-                } else {
-                    (lower, Bound::AboveMax(bounds.max()))
-                };
-                return Ok(Verdict::Certain(self.explain(t, level, bound)?));
-            }
+            for (min, max, target) in self.limits_at(t) {
+                if let Some((level, bound)) = certain_breach(lower, upper, min, max, target) {
+                    return Ok(Verdict::Certain(self.explain(t, level, bound)?));
+                }
 
-            if possible.is_none() && (lower < bounds.min() || upper > bounds.max()) {
-                let (level, bound) = if lower < bounds.min() {
-                    (lower, Bound::BelowMin(bounds.min()))
-                } else {
-                    (upper, Bound::AboveMax(bounds.max()))
-                };
-                possible = Some(self.explain(t, level, bound)?);
+                if possible.is_none() {
+                    if let Some((level, bound)) = possible_breach(lower, upper, min, max, target) {
+                        possible = Some(self.explain(t, level, bound)?);
+                    }
+                }
             }
         }
 
         Ok(possible.map_or(Verdict::Safe, Verdict::Possible))
+    }
+
+    /// The limits in force at `t`: the bounds, then each target at `t`, as
+    /// `(min, max, is_target)`.
+    fn limits_at(&self, t: Tick) -> impl Iterator<Item = (Level, Level, bool)> + '_ {
+        let bounds = self.timeline.bounds();
+        let targets = self
+            .timeline
+            .targets()
+            .iter()
+            .filter(move |target| target.at == t)
+            .map(|target| (target.min, Level::MAX, true));
+        core::iter::once((bounds.min(), bounds.max(), false)).chain(targets)
     }
 
     /// The fixed level plus each flexible activity's extreme contribution at `t`.
@@ -268,13 +274,10 @@ impl<'a, S: Storage> Envelope<'a, S> {
 
     /// The violation at `t` with the activities that can push towards `bound` there.
     fn explain(&self, t: Tick, level: Level, bound: Bound) -> Result<EnvelopeViolation, Error> {
-        let pushes = |effect: i128| match bound {
-            Bound::BelowMin(_) => effect < 0,
-            Bound::AboveMax(_) => effect > 0,
-        };
-        let towards = match bound {
-            Bound::BelowMin(_) => Extreme::Lower,
-            Bound::AboveMax(_) => Extreme::Upper,
+        let towards = if bound.is_lower() {
+            Extreme::Lower
+        } else {
+            Extreme::Upper
         };
 
         let mut contributors = Vec::new();
@@ -284,7 +287,7 @@ impl<'a, S: Storage> Envelope<'a, S> {
             .map_err(|_| Error::OutOfMemory)?;
         contributors.extend_from_slice(&fixed);
         for activity in self.flexible {
-            if pushes(extreme_contribution(activity, t, towards)?) {
+            if bound.is_pushed_by(extreme_contribution(activity, t, towards)?) {
                 contributors.push(activity.activity);
             }
         }
@@ -297,6 +300,51 @@ impl<'a, S: Storage> Envelope<'a, S> {
             bound,
             contributors,
         })
+    }
+}
+
+/// The broken lower bound: [`Bound::BelowTarget`] for a target, [`Bound::BelowMin`] otherwise.
+const fn lower_bound(min: Level, target: bool) -> Bound {
+    if target {
+        Bound::BelowTarget(min)
+    } else {
+        Bound::BelowMin(min)
+    }
+}
+
+/// The level and bound of a violation every schedule has, if the envelopes `[lower, upper]`
+/// lie entirely outside `[min, max]`.
+const fn certain_breach(
+    lower: Level,
+    upper: Level,
+    min: Level,
+    max: Level,
+    target: bool,
+) -> Option<(Level, Bound)> {
+    if upper < min {
+        Some((upper, lower_bound(min, target)))
+    } else if lower > max {
+        Some((lower, Bound::AboveMax(max)))
+    } else {
+        None
+    }
+}
+
+/// The level and bound of a violation some schedule may have, if the envelopes `[lower, upper]`
+/// reach outside `[min, max]`.
+const fn possible_breach(
+    lower: Level,
+    upper: Level,
+    min: Level,
+    max: Level,
+    target: bool,
+) -> Option<(Level, Bound)> {
+    if lower < min {
+        Some((lower, lower_bound(min, target)))
+    } else if upper > max {
+        Some((upper, Bound::AboveMax(max)))
+    } else {
+        None
     }
 }
 

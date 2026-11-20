@@ -253,6 +253,22 @@ impl<P: PlanStorage> Plan<P> {
         self.states.get(id.0)
     }
 
+    /// Requires the level of numeric timeline `id` at `target.at` to be at least `target.min`.
+    ///
+    /// See [`Timeline::add_target`]. [`fits`](Self::fits) and
+    /// [`earliest_start`](Self::earliest_start) then reject starts that would miss it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownResource`] if `id` is not part of this plan, and the errors of
+    /// [`Timeline::add_target`].
+    pub fn add_target(&mut self, id: TimelineId, target: crate::Target) -> Result<(), Error> {
+        self.timelines
+            .get_mut(id.0)
+            .ok_or(Error::UnknownResource)?
+            .add_target(target)
+    }
+
     /// Adds every demand of `activity`, shifted to `start`, to its timeline.
     ///
     /// The placement is all or nothing. It does not check the bounds; use

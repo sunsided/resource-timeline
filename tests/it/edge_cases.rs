@@ -207,3 +207,40 @@ fn opposing_rates_net_and_stop() {
     assert_eq!(violation.bound, Bound::AboveMax(20));
     assert_eq!(battery.level_at(1_000), Ok(210));
 }
+
+/// Targets: the strictest missed target at a tick is reported, a broken bound wins at the same
+/// tick, targets before the start are rejected, and removal restores the timeline.
+#[test]
+fn end_state_targets() {
+    use resource_timeline::Target;
+
+    let bounds = Bounds::new(0, 100).expect("valid");
+    let mut battery = Timeline::depletable(0, 50, bounds, 8).expect("valid");
+    battery
+        .add(ActivityId(1), Impact::Step { at: 10, delta: -45 })
+        .expect("valid");
+    battery
+        .add_target(Target { at: 10, min: 6 })
+        .expect("valid");
+    battery
+        .add_target(Target { at: 10, min: 8 })
+        .expect("valid");
+    let violation = battery.first_violation().expect("small").expect("missed");
+    assert_eq!(violation.bound, Bound::BelowTarget(8));
+    assert_eq!((violation.at, violation.level), (10, 5));
+    assert_eq!(violation.contributors, [ActivityId(1)]);
+
+    battery
+        .add(ActivityId(2), Impact::Step { at: 10, delta: -10 })
+        .expect("valid");
+    let violation = battery.first_violation().expect("small").expect("broken");
+    assert_eq!(violation.bound, Bound::BelowMin(0));
+
+    assert_eq!(
+        battery.add_target(Target { at: -1, min: 0 }),
+        Err(resource_timeline::Error::BeforeStart { at: -1, start: 0 })
+    );
+    battery.remove(ActivityId(2));
+    assert_eq!(battery.remove_targets_at(10), 2);
+    assert_eq!(battery.first_violation().expect("small"), None);
+}

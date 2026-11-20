@@ -12,6 +12,35 @@ pub enum Bound {
     BelowMin(Level),
     /// The level rose above the upper bound (capacity).
     AboveMax(Level),
+    /// The level at a [`Target`](crate::Target) tick is below the target's minimum, for
+    /// example the battery reserve required at the end of a sol.
+    BelowTarget(Level),
+}
+
+impl Bound {
+    /// Whether the level is too low ([`BelowMin`](Self::BelowMin),
+    /// [`BelowTarget`](Self::BelowTarget)) rather than too high.
+    #[must_use]
+    pub const fn is_lower(&self) -> bool {
+        matches!(self, Self::BelowMin(_) | Self::BelowTarget(_))
+    }
+
+    /// The value of the broken bound.
+    #[must_use]
+    pub const fn value(&self) -> Level {
+        match *self {
+            Self::BelowMin(value) | Self::AboveMax(value) | Self::BelowTarget(value) => value,
+        }
+    }
+
+    /// Whether a net effect of `effect` pushes the level towards this bound.
+    pub(crate) const fn is_pushed_by(&self, effect: i128) -> bool {
+        if self.is_lower() {
+            effect < 0
+        } else {
+            effect > 0
+        }
+    }
 }
 
 /// The first tick at which a timeline's level is out of bounds, and why.
@@ -34,7 +63,8 @@ pub struct Violation<
     /// The activities whose net effect in force at [`at`](Self::at) pushes the level towards
     /// the broken bound.
     ///
-    /// Net negative for [`Bound::BelowMin`], net positive for [`Bound::AboveMax`]. Effects are
+    /// Net negative for [`Bound::BelowMin`] and [`Bound::BelowTarget`], net positive for
+    /// [`Bound::AboveMax`]. Effects are
     /// netted per activity first. Sorted ascending, without duplicates. Empty when the initial
     /// level alone breaks the bound.
     pub contributors: S::List<ActivityId>,
