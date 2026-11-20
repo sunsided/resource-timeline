@@ -1,6 +1,7 @@
 //! Integration tests for `resource-timeline`.
 
 mod edge_cases;
+mod envelope;
 mod errors;
 mod greedy;
 mod oracle;

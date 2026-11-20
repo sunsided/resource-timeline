@@ -52,6 +52,7 @@
 extern crate alloc;
 
 mod activity;
+pub mod envelope;
 mod error;
 pub mod greedy;
 mod impact;

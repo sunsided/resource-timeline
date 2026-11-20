@@ -9,7 +9,7 @@ use crate::oracle;
 const BUDGET: usize = 64;
 
 /// A generated impact owned by one of a few activities, so that activities often share impacts.
-fn owned_impact(start: i64, claims_only: bool) -> impl Strategy<Value = (ActivityId, Impact)> {
+pub fn owned_impact(start: i64, claims_only: bool) -> impl Strategy<Value = (ActivityId, Impact)> {
     let step = (start..start + 20, -6_i64..=6).prop_map(|(at, delta)| Impact::Step { at, delta });
     let claim = (start..start + 20, 1_i64..=6, 1_i64..=4).prop_map(|(from, length, amount)| {
         Impact::Claim {
@@ -56,7 +56,7 @@ fn claimable() -> impl Strategy<Value = Timeline> {
 }
 
 /// `timeline` with all `impacts` added in order.
-fn with_impacts(mut timeline: Timeline, impacts: &[(ActivityId, Impact)]) -> Timeline {
+pub fn with_impacts(mut timeline: Timeline, impacts: &[(ActivityId, Impact)]) -> Timeline {
     for &(activity, impact) in impacts {
         timeline
             .add(activity, impact)

@@ -5,7 +5,7 @@ pub(crate) mod sweep;
 
 use alloc::vec::Vec;
 
-use crate::{ActivityId, Error, Impact, Level, Tick, Violation};
+use crate::{ActivityId, Bound, Error, Impact, Level, Tick, Violation};
 use profile::{Point, Profile};
 use sweep::{Breach, Frame};
 
@@ -351,6 +351,16 @@ impl Timeline {
             Some(breach) => sweep::explain(&self.impacts, breach).map(Some),
             None => Ok(None),
         }
+    }
+
+    /// The activities whose net effect in force at `t` pushes towards `bound`, sorted.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Overflow`] or [`Error::OutOfMemory`] as for
+    /// [`first_violation`](Self::first_violation).
+    pub(crate) fn contributors_at(&self, t: Tick, bound: Bound) -> Result<Vec<ActivityId>, Error> {
+        sweep::contributors(&self.impacts, t, bound)
     }
 
     /// The first breach of the bounds if the change points `extra` were added.

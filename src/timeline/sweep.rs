@@ -233,7 +233,12 @@ pub(crate) fn explain(
 /// The activities whose net effect in force at tick `at` pushes towards `bound`.
 ///
 /// Sorted ascending, without duplicates.
-fn contributors(
+///
+/// # Errors
+///
+/// - [`Error::Overflow`] if a contribution overflows.
+/// - [`Error::OutOfMemory`] if the working memory cannot be allocated.
+pub(crate) fn contributors(
     impacts: &[(ActivityId, Impact)],
     at: Tick,
     bound: Bound,
