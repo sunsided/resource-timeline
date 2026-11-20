@@ -3,9 +3,10 @@
 pub(crate) mod profile;
 pub(crate) mod sweep;
 
-use alloc::vec::Vec;
-
-use crate::{ActivityId, Bound, Error, Impact, Level, Tick, Violation};
+#[cfg(feature = "alloc")]
+use crate::storage::Heap;
+use crate::storage::{Seq, Slot, Storage};
+use crate::{ActivityId, Container, Error, Impact, Level, Tick, Violation};
 use profile::{Point, Profile};
 use sweep::{Breach, Frame};
 
@@ -67,6 +68,12 @@ pub enum Kind {
 
 /// The level of one resource over time, built from activity impacts.
 ///
+/// The storage `S` is [`Heap`](crate::storage::Heap) by default; with
+/// [`Fixed<N>`](crate::storage::Fixed) the timeline holds at most `N` impacts and never
+/// allocates (see [`storage`](crate::storage)). Heap timelines are created with
+/// [`depletable`](Self::depletable) and [`claimable`](Self::claimable), timelines with any
+/// storage with [`depletable_in`](Self::depletable_in) and [`claimable_in`](Self::claimable_in).
+///
 /// The level starts at an initial value at the start tick and changes only through impacts. It
 /// is piecewise linear: steps and claims make it jump, rates give it a slope. Checks cover
 /// every tick from the start onward; after the last impact ends the level is constant.
@@ -94,8 +101,11 @@ pub enum Kind {
 /// assert_eq!(battery.first_violation()?, None);
 /// # Ok::<(), resource_timeline::Error>(())
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Timeline {
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Timeline<
+    #[cfg(feature = "alloc")] S: Storage = Heap,
+    #[cfg(not(feature = "alloc"))] S: Storage,
+> {
     /// Which impacts the timeline accepts.
     kind: Kind,
     /// The first tick of the timeline. No impact may take effect earlier.
@@ -107,13 +117,14 @@ pub struct Timeline {
     /// The maximum number of impacts the timeline accepts.
     budget: usize,
     /// The impacts in insertion order. Never longer than `budget`.
-    impacts: Vec<(ActivityId, Impact)>,
+    impacts: S::List<(ActivityId, Impact)>,
     /// The change points of all impacts, kept in sync with `impacts`.
-    profile: Profile,
+    profile: Profile<S>,
 }
 
+#[cfg(feature = "alloc")]
 impl Timeline {
-    /// Creates a timeline for a depletable resource such as battery energy or storage.
+    /// Creates a heap timeline for a depletable resource such as battery energy or storage.
     ///
     /// `initial` is the level at `start`. `budget` caps the number of impacts.
     ///
@@ -126,11 +137,11 @@ impl Timeline {
         bounds: Bounds,
         budget: usize,
     ) -> Result<Self, Error> {
-        Ok(Self::new(Kind::Depletable, start, initial, bounds, budget))
+        Self::depletable_in(start, initial, bounds, budget)
     }
 
-    /// Creates a timeline for a claimable resource with `capacity` units, all available at
-    /// `start`.
+    /// Creates a heap timeline for a claimable resource with `capacity` units, all available
+    /// at `start`.
     ///
     /// The bounds are `[0, capacity]`, so overlapping claims may never hold more than
     /// `capacity` units. `budget` caps the number of impacts.
@@ -139,6 +150,48 @@ impl Timeline {
     ///
     /// Returns [`Error::InvalidBounds`] if `capacity` is negative.
     pub const fn claimable(start: Tick, capacity: Level, budget: usize) -> Result<Self, Error> {
+        Self::claimable_in(start, capacity, budget)
+    }
+}
+
+impl<S: Storage> Timeline<S> {
+    /// Creates a timeline with storage `S` for a depletable resource such as battery energy.
+    ///
+    /// As [`Timeline::depletable`], for any [`Storage`]. With [`Fixed<N>`](crate::storage::Fixed)
+    /// a `budget` above `N` is allowed, but adds beyond `N` fail with
+    /// [`Error::CapacityExceeded`].
+    ///
+    /// # Errors
+    ///
+    /// Never fails today; returns `Result` so later validation does not break callers.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use resource_timeline::storage::Fixed;
+    /// use resource_timeline::{Bounds, Timeline};
+    ///
+    /// let battery = Timeline::<Fixed<32>>::depletable_in(0, 100, Bounds::new(20, 120)?, 32)?;
+    /// assert_eq!(battery.level_at(1_000)?, 100);
+    /// # Ok::<(), resource_timeline::Error>(())
+    /// ```
+    pub const fn depletable_in(
+        start: Tick,
+        initial: Level,
+        bounds: Bounds,
+        budget: usize,
+    ) -> Result<Self, Error> {
+        Ok(Self::new(Kind::Depletable, start, initial, bounds, budget))
+    }
+
+    /// Creates a timeline with storage `S` for a claimable resource with `capacity` units.
+    ///
+    /// As [`Timeline::claimable`], for any [`Storage`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidBounds`] if `capacity` is negative.
+    pub const fn claimable_in(start: Tick, capacity: Level, budget: usize) -> Result<Self, Error> {
         match Bounds::new(0, capacity) {
             Ok(bounds) => Ok(Self::new(Kind::Claimable, start, capacity, bounds, budget)),
             Err(error) => Err(error),
@@ -153,8 +206,8 @@ impl Timeline {
             initial,
             bounds,
             budget,
-            impacts: Vec::new(),
-            profile: Profile { points: Vec::new() },
+            impacts: <S::List<(ActivityId, Impact)> as Seq<_>>::EMPTY,
+            profile: Profile::EMPTY,
         }
     }
 
@@ -200,21 +253,18 @@ impl Timeline {
     /// - [`Error::EmptyInterval`] if a claim or rate has `end <= start`.
     /// - [`Error::NonPositiveAmount`] if a claim amount is zero or negative.
     /// - [`Error::BudgetExhausted`] if the timeline already holds `budget` impacts.
-    /// - [`Error::OutOfMemory`] if the impact list cannot grow.
+    /// - [`Error::OutOfMemory`] if the impact list cannot grow (heap storage).
+    /// - [`Error::CapacityExceeded`] if the impact list or the change points are full
+    ///   (fixed storage).
     ///
     /// The timeline is unchanged on error.
     pub fn add(&mut self, activity: ActivityId, impact: Impact) -> Result<(), Error> {
         self.validate(impact)?;
-        if self.impacts.len() >= self.budget {
-            return Err(Error::BudgetExhausted { limit: self.budget });
-        }
-
-        self.impacts
-            .try_reserve(1)
-            .map_err(|_| Error::OutOfMemory)?;
+        self.ensure_room(1)?;
+        self.impacts.try_reserve(1, Container::Impacts)?;
         self.profile.add(&impact)?;
-        self.impacts.push((activity, impact));
-        Ok(())
+        self.impacts
+            .try_push((activity, impact), Container::Impacts)
     }
 
     /// Removes every impact of `activity` and returns how many there were.
@@ -248,17 +298,28 @@ impl Timeline {
         self.profile.points().iter().map(|point| point.at)
     }
 
-    /// `Ok` while the timeline has room for `extra` more impacts.
+    /// `Ok` while the timeline has room for `extra` more impacts, by budget and by capacity.
+    ///
+    /// A fixed change-point list has room for two points per impact, so the impact capacity
+    /// covers it.
     ///
     /// # Errors
     ///
-    /// [`Error::BudgetExhausted`] if `extra` more impacts would exceed the budget.
+    /// - [`Error::BudgetExhausted`] if `extra` more impacts would exceed the budget.
+    /// - [`Error::CapacityExceeded`] if they would exceed a fixed impact capacity.
     pub(crate) fn ensure_room(&self, extra: usize) -> Result<(), Error> {
-        if self.impacts.len().saturating_add(extra) > self.budget {
+        let needed = self.impacts.len().saturating_add(extra);
+        if needed > self.budget {
             return Err(Error::BudgetExhausted { limit: self.budget });
         }
 
-        Ok(())
+        match self.impacts.capacity() {
+            Some(capacity) if needed > capacity => Err(Error::CapacityExceeded {
+                container: Container::Impacts,
+                capacity,
+            }),
+            _ => Ok(()),
+        }
     }
 
     /// Checks that `impact` fits this timeline's kind and start, and is well formed.
@@ -345,10 +406,11 @@ impl Timeline {
     /// - [`Error::Overflow`] if a running sum exceeds `i128`, or if the level at the first
     ///   violation does not fit a [`Level`]. A violation exists in the second case, but it
     ///   cannot be reported exactly.
-    /// - [`Error::OutOfMemory`] if the working memory cannot be allocated.
-    pub fn first_violation(&self) -> Result<Option<Violation>, Error> {
+    /// - [`Error::OutOfMemory`] if the working memory cannot be allocated (heap storage).
+    ///   Fixed storage has room for its explanation by construction.
+    pub fn first_violation(&self) -> Result<Option<Violation<S>>, Error> {
         match self.breach_with(&[])? {
-            Some(breach) => sweep::explain(&self.impacts, breach).map(Some),
+            Some(breach) => sweep::explain::<S>(&self.impacts, breach).map(Some),
             None => Ok(None),
         }
     }
@@ -359,8 +421,13 @@ impl Timeline {
     ///
     /// [`Error::Overflow`] or [`Error::OutOfMemory`] as for
     /// [`first_violation`](Self::first_violation).
-    pub(crate) fn contributors_at(&self, t: Tick, bound: Bound) -> Result<Vec<ActivityId>, Error> {
-        sweep::contributors(&self.impacts, t, bound)
+    #[cfg(feature = "alloc")]
+    pub(crate) fn contributors_at(
+        &self,
+        t: Tick,
+        bound: crate::Bound,
+    ) -> Result<S::List<ActivityId>, Error> {
+        sweep::contributors::<S>(&self.impacts, t, bound)
     }
 
     /// The first breach of the bounds if the change points `extra` were added.
@@ -378,4 +445,10 @@ impl Timeline {
         };
         sweep::first_breach(frame, self.profile.points(), extra)
     }
+}
+
+impl<S: Storage> crate::storage::Sealed for Timeline<S> {}
+
+impl<S: Storage> Slot for Timeline<S> {
+    const EMPTY: Self = Self::new(Kind::Depletable, 0, 0, Bounds { min: 0, max: 0 }, 0);
 }

@@ -11,6 +11,11 @@ readme = "README.md"
 keywords = ["scheduling", "resources", "spacecraft", "timeline", "planning"]
 categories = ["aerospace", "algorithms", "no-std"]
 
+[features]
+default = ["alloc"]
+## Heap storage, envelopes and the greedy scheduler. Without it the crate needs no allocator.
+alloc = []
+
 [dependencies]
 
 [lints.rust]
@@ -28,3 +33,17 @@ proptest = "1.11.0"
 [[bench]]
 name = "timeline"
 harness = false
+required-features = ["alloc"]
+
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
+required-features = ["alloc"]
+
+[[test]]
+name = "no_alloc"
+path = "tests/no_alloc.rs"
+
+[[example]]
+name = "rover"
+required-features = ["alloc"]

@@ -1,12 +1,11 @@
 //! Queries and the violation search over the sorted sets of a state timeline.
 
-use alloc::vec::Vec;
-
 use super::{Requirement, StateValue, StateViolation};
-use crate::{ActivityId, Error, Tick};
+use crate::storage::{Seq, Slot, Storage};
+use crate::{ActivityId, Container, Error, Tick};
 
 /// A stored [`StateImpact::Set`](crate::StateImpact::Set).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct SetPoint {
     /// The tick of the change.
     pub(crate) at: Tick,
@@ -14,6 +13,16 @@ pub(crate) struct SetPoint {
     pub(crate) activity: ActivityId,
     /// The new value.
     pub(crate) value: StateValue,
+}
+
+impl crate::storage::Sealed for SetPoint {}
+
+impl Slot for SetPoint {
+    const EMPTY: Self = Self {
+        at: 0,
+        activity: ActivityId(0),
+        value: 0,
+    };
 }
 
 impl SetPoint {
@@ -197,8 +206,9 @@ impl Sets<'_> {
     ///
     /// # Errors
     ///
-    /// [`Error::OutOfMemory`] if the setter list cannot be allocated.
-    pub(super) fn explain(&self, breach: Breach) -> Result<StateViolation, Error> {
+    /// [`Error::OutOfMemory`] or [`Error::CapacityExceeded`] if the setter list cannot be
+    /// allocated.
+    pub(super) fn explain<S: Storage>(&self, breach: Breach) -> Result<StateViolation<S>, Error> {
         match breach {
             Breach::Mismatch {
                 at,
@@ -215,11 +225,12 @@ impl Sets<'_> {
             }),
             Breach::Conflict { at } => {
                 let (base, extra) = (sets_at(self.base, at), sets_at(self.extra, at));
-                let mut setters = Vec::new();
-                setters
-                    .try_reserve_exact(base.len() + extra.len())
-                    .map_err(|_| Error::OutOfMemory)?;
-                setters.extend(base.iter().chain(extra).map(|set| set.activity));
+                let mut setters = <S::List<ActivityId> as Seq<_>>::EMPTY;
+                setters.try_reserve(base.len() + extra.len(), Container::Contributors)?;
+                for set in base.iter().chain(extra) {
+                    setters.try_push(set.activity, Container::Contributors)?;
+                }
+
                 setters.sort_unstable();
                 setters.dedup();
                 Ok(StateViolation::Conflict { at, setters })

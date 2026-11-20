@@ -11,11 +11,10 @@
 //!     scan --> explain["net impacts per activity at the violating tick"]
 //! ```
 
-use alloc::vec::Vec;
-
 use super::Bounds;
 use super::profile::Point;
-use crate::{ActivityId, Bound, Error, Impact, Level, Tick, Violation};
+use crate::storage::{Seq, Storage};
+use crate::{ActivityId, Bound, Container, Error, Impact, Level, Tick, Violation};
 
 /// The first out-of-bounds tick of a timeline, before it is explained.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,11 +174,7 @@ impl Iterator for Grouped<'_> {
             (None, None) => return None,
         };
 
-        let mut net = Point {
-            at,
-            step: 0,
-            slope: 0,
-        };
+        let mut net = Point::loose(at, 0, 0);
         take_tick(&mut self.base, &mut net);
         take_tick(&mut self.extra, &mut net);
         Some(net)
@@ -214,13 +209,14 @@ fn broken_bound(bounds: Bounds, level: i128) -> Option<Bound> {
 /// # Errors
 ///
 /// - [`Error::Overflow`] if the level does not fit a [`Level`], or a contribution overflows.
-/// - [`Error::OutOfMemory`] if the working memory cannot be allocated.
-pub(crate) fn explain(
+/// - [`Error::OutOfMemory`] or [`Error::CapacityExceeded`] if the working memory cannot be
+///   allocated.
+pub(crate) fn explain<S: Storage>(
     impacts: &[(ActivityId, Impact)],
     breach: Breach,
-) -> Result<Violation, Error> {
+) -> Result<Violation<S>, Error> {
     let level = Level::try_from(breach.level).map_err(|_| Error::Overflow)?;
-    let contributors = contributors(impacts, breach.at, breach.bound)?;
+    let contributors = contributors::<S>(impacts, breach.at, breach.bound)?;
 
     Ok(Violation {
         at: breach.at,
@@ -232,48 +228,46 @@ pub(crate) fn explain(
 
 /// The activities whose net effect in force at tick `at` pushes towards `bound`.
 ///
-/// Sorted ascending, without duplicates.
+/// Sorted ascending, without duplicates. `impacts` must fit an `S` impact list, which the
+/// impacts of a timeline with storage `S` do.
 ///
 /// # Errors
 ///
 /// - [`Error::Overflow`] if a contribution overflows.
-/// - [`Error::OutOfMemory`] if the working memory cannot be allocated.
-pub(crate) fn contributors(
+/// - [`Error::OutOfMemory`] or [`Error::CapacityExceeded`] if the working memory cannot be
+///   allocated.
+pub(crate) fn contributors<S: Storage>(
     impacts: &[(ActivityId, Impact)],
     at: Tick,
     bound: Bound,
-) -> Result<Vec<ActivityId>, Error> {
-    let net = net_per_activity(impacts, at)?;
+) -> Result<S::List<ActivityId>, Error> {
+    let net = net_per_activity::<S>(impacts, at)?;
     let pushes = |effect: i128| match bound {
         Bound::BelowMin(_) => effect < 0,
         Bound::AboveMax(_) => effect > 0,
     };
 
-    let mut activities = Vec::new();
-    activities
-        .try_reserve_exact(net.len())
-        .map_err(|_| Error::OutOfMemory)?;
-    activities.extend(
-        net.into_iter()
-            .filter(|&(_, effect)| pushes(effect))
-            .map(|(activity, _)| activity),
-    );
+    let mut activities = <S::List<ActivityId> as Seq<_>>::EMPTY;
+    activities.try_reserve(net.len(), Container::Contributors)?;
+    for &(activity, effect) in net.iter() {
+        if pushes(effect) {
+            activities.try_push(activity, Container::Contributors)?;
+        }
+    }
 
     Ok(activities)
 }
 
 /// The summed effect of each activity's impacts in force at tick `at`, sorted by activity.
-fn net_per_activity(
+fn net_per_activity<S: Storage>(
     impacts: &[(ActivityId, Impact)],
     at: Tick,
-) -> Result<Vec<(ActivityId, i128)>, Error> {
-    let mut effects = Vec::new();
-    effects
-        .try_reserve_exact(impacts.len())
-        .map_err(|_| Error::OutOfMemory)?;
+) -> Result<S::List<(ActivityId, i128)>, Error> {
+    let mut effects = <S::List<(ActivityId, i128)> as Seq<_>>::EMPTY;
+    effects.try_reserve(impacts.len(), Container::Scratch)?;
     for &(activity, impact) in impacts {
         let effect = impact.contribution_at(at).ok_or(Error::Overflow)?;
-        effects.push((activity, effect));
+        effects.try_push((activity, effect), Container::Scratch)?;
     }
 
     effects.sort_unstable_by_key(|&(activity, _)| activity);
@@ -282,7 +276,7 @@ fn net_per_activity(
 }
 
 /// Sums the effects of adjacent entries with the same activity, in place.
-fn merge_adjacent(effects: &mut Vec<(ActivityId, i128)>) -> Result<(), Error> {
+fn merge_adjacent(effects: &mut impl Seq<(ActivityId, i128)>) -> Result<(), Error> {
     let mut merged: usize = 0;
     for read in 0..effects.len() {
         let (activity, effect) = effects[read];

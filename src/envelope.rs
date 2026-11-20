@@ -38,6 +38,7 @@
 
 use alloc::vec::Vec;
 
+use crate::storage::{Heap, Storage};
 use crate::{ActivityId, Bound, Error, Impact, Level, Tick, Timeline, Window};
 
 /// An activity whose start is only known to lie in a window.
@@ -118,9 +119,9 @@ pub struct EnvelopeViolation {
 /// # Ok::<(), resource_timeline::Error>(())
 /// ```
 #[derive(Debug, Clone, Copy)]
-pub struct Envelope<'a> {
+pub struct Envelope<'a, S: Storage = Heap> {
     /// The timeline with the fixed impacts, start, initial level and bounds.
-    timeline: &'a Timeline,
+    timeline: &'a Timeline<S>,
     /// The flexible activities, validated against the timeline.
     flexible: &'a [Flexible<'a>],
 }
@@ -134,7 +135,7 @@ enum Extreme {
     Upper,
 }
 
-impl<'a> Envelope<'a> {
+impl<'a, S: Storage> Envelope<'a, S> {
     /// Combines the fixed impacts of `timeline` with the `flexible` activities.
     ///
     /// # Errors
@@ -143,7 +144,7 @@ impl<'a> Envelope<'a> {
     ///   latest start of its window, including [`Error::BeforeStart`] when the earliest start
     ///   would place an impact before the timeline start.
     /// - [`Error::Overflow`] if a shifted tick does not fit a [`Tick`].
-    pub fn new(timeline: &'a Timeline, flexible: &'a [Flexible<'a>]) -> Result<Self, Error> {
+    pub fn new(timeline: &'a Timeline<S>, flexible: &'a [Flexible<'a>]) -> Result<Self, Error> {
         for activity in flexible {
             for impact in activity.impacts {
                 for start in [activity.window.earliest(), activity.window.latest()] {
@@ -281,7 +282,7 @@ impl<'a> Envelope<'a> {
         contributors
             .try_reserve_exact(fixed.len() + self.flexible.len())
             .map_err(|_| Error::OutOfMemory)?;
-        contributors.extend(fixed);
+        contributors.extend_from_slice(&fixed);
         for activity in self.flexible {
             if pushes(extreme_contribution(activity, t, towards)?) {
                 contributors.push(activity.activity);

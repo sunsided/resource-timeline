@@ -56,32 +56,40 @@
 //! # Ok::<(), resource_timeline::Error>(())
 //! ```
 //!
+//! ## Features
+//!
+//! - `alloc` (default): heap storage ([`storage::Heap`], the default storage of every type),
+//!   [`envelope`] and [`greedy`]. Without it the crate needs no allocator: timelines, state
+//!   timelines and plans use [`storage::Fixed`] and [`storage::FixedPlan`].
+//!
 //! ## Status
 //!
-//! Pre-release. Milestones 1 to 4 of `docs/design.md` are implemented except end-state level
-//! checks and profile extraction, milestone 5 for flexible starts with fixed durations, and the
-//! incremental part of milestone 6. Fixed-capacity storage is not. The API will change.
+//! Pre-release. See `docs/design.md` for the milestones. The API will change.
 //!
 //! Repository: <https://github.com/sunsided/resource-timeline>
 
 #![no_std]
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "alloc")]
 extern crate alloc;
 
 mod activity;
+#[cfg(feature = "alloc")]
 pub mod envelope;
 mod error;
+#[cfg(feature = "alloc")]
 pub mod greedy;
 mod impact;
 mod plan;
 mod state;
+pub mod storage;
 mod timeline;
 mod violation;
 mod window;
 
 pub use activity::ActivityId;
-pub use error::Error;
+pub use error::{Container, Error};
 pub use impact::Impact;
 pub use plan::{Demand, Plan, PlanViolation, StateId, TimelineId};
 pub use state::{StateImpact, StateTimeline, StateValue, StateViolation};
@@ -98,3 +106,9 @@ pub type Tick = i64;
 
 /// A resource level in a mission-chosen integer unit, for example mWh, KiB or instrument units.
 pub type Level = i64;
+
+/// A numeric timeline with room for `N` impacts that never allocates.
+pub type FixedTimeline<const N: usize> = Timeline<storage::Fixed<N>>;
+
+/// A state timeline with room for `N` impacts that never allocates.
+pub type FixedStateTimeline<const N: usize> = StateTimeline<storage::Fixed<N>>;

@@ -38,9 +38,10 @@
 
 mod check;
 
-use alloc::vec::Vec;
-
-use crate::{ActivityId, Error, Tick};
+#[cfg(feature = "alloc")]
+use crate::storage::Heap;
+use crate::storage::{Seq, Slot, Storage};
+use crate::{ActivityId, Container, Error, Tick};
 pub(crate) use check::SetPoint;
 use check::Sets;
 
@@ -99,8 +100,13 @@ impl StateImpact {
 }
 
 /// The first tick at which a state timeline is inconsistent, and why.
+///
+/// The setter list of a conflict uses the storage `S` of the timeline that reported it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum StateViolation {
+pub enum StateViolation<
+    #[cfg(feature = "alloc")] S: Storage = Heap,
+    #[cfg(not(feature = "alloc"))] S: Storage,
+> {
     /// A requirement sees a different value.
     Mismatch {
         /// The earliest tick at which the requirement fails.
@@ -124,11 +130,11 @@ pub enum StateViolation {
         /// The tick of the contradicting sets.
         at: Tick,
         /// Every activity that sets a value at `at`. Sorted ascending, without duplicates.
-        setters: Vec<ActivityId>,
+        setters: S::List<ActivityId>,
     },
 }
 
-impl StateViolation {
+impl<S: Storage> StateViolation<S> {
     /// The tick of the violation.
     #[must_use]
     pub const fn at(&self) -> Tick {
@@ -139,7 +145,7 @@ impl StateViolation {
 }
 
 /// A requirement stored by a state timeline.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct Requirement {
     /// The activity that holds the requirement.
     pub(crate) activity: ActivityId,
@@ -151,14 +157,33 @@ pub(crate) struct Requirement {
     pub(crate) value: StateValue,
 }
 
+impl crate::storage::Sealed for Requirement {}
+
+impl Slot for Requirement {
+    const EMPTY: Self = Self {
+        activity: ActivityId(0),
+        start: 0,
+        end: 0,
+        value: 0,
+    };
+}
+
 /// A discrete state over time, built from activity sets and checked against requirements.
 ///
 /// The state equals the initial value from the start tick until the first set, and the value of
 /// the latest set afterwards. Sets are kept sorted by tick, so a check costs
 /// `O(n + r log n)` for `n` sets and `r` requirements and does not allocate unless it reports a
 /// [`StateViolation::Conflict`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StateTimeline {
+///
+/// The storage `S` is [`Heap`](crate::storage::Heap) by default; with
+/// [`Fixed<N>`](crate::storage::Fixed) the timeline holds at most `N` impacts and never
+/// allocates. Heap timelines are created with [`new`](Self::new), timelines with any storage
+/// with [`new_in`](Self::new_in).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct StateTimeline<
+    #[cfg(feature = "alloc")] S: Storage = Heap,
+    #[cfg(not(feature = "alloc"))] S: Storage,
+> {
     /// The first tick of the timeline. No impact may refer to an earlier tick.
     start: Tick,
     /// The value from the start until the first set.
@@ -166,25 +191,39 @@ pub struct StateTimeline {
     /// The maximum number of impacts the timeline accepts.
     budget: usize,
     /// The impacts in insertion order. Never longer than `budget`.
-    impacts: Vec<(ActivityId, StateImpact)>,
+    impacts: S::List<(ActivityId, StateImpact)>,
     /// The sets, sorted by tick and then by activity.
-    sets: Vec<SetPoint>,
+    sets: S::List<SetPoint>,
     /// The requirements in insertion order.
-    requires: Vec<Requirement>,
+    requires: S::List<Requirement>,
 }
 
+#[cfg(feature = "alloc")]
 impl StateTimeline {
-    /// Creates a state timeline that holds `initial` from `start` on, with room for `budget`
-    /// impacts.
+    /// Creates a heap state timeline that holds `initial` from `start` on, with room for
+    /// `budget` impacts.
     #[must_use]
     pub const fn new(start: Tick, initial: StateValue, budget: usize) -> Self {
+        Self::new_in(start, initial, budget)
+    }
+}
+
+impl<S: Storage> StateTimeline<S> {
+    /// Creates a state timeline with storage `S` that holds `initial` from `start` on, with
+    /// room for `budget` impacts.
+    ///
+    /// As [`StateTimeline::new`], for any [`Storage`]. With
+    /// [`Fixed<N>`](crate::storage::Fixed), adds beyond `N` impacts fail with
+    /// [`Error::CapacityExceeded`] even if the budget is larger.
+    #[must_use]
+    pub const fn new_in(start: Tick, initial: StateValue, budget: usize) -> Self {
         Self {
             start,
             initial,
             budget,
-            impacts: Vec::new(),
-            sets: Vec::new(),
-            requires: Vec::new(),
+            impacts: <S::List<(ActivityId, StateImpact)> as Seq<_>>::EMPTY,
+            sets: <S::List<SetPoint> as Seq<_>>::EMPTY,
+            requires: <S::List<Requirement> as Seq<_>>::EMPTY,
         }
     }
 
@@ -213,44 +252,38 @@ impl StateTimeline {
     /// - [`Error::BeforeStart`] if the impact refers to a tick before the start.
     /// - [`Error::EmptyInterval`] if a requirement has `end <= start`.
     /// - [`Error::BudgetExhausted`] if the timeline already holds `budget` impacts.
-    /// - [`Error::OutOfMemory`] if the impact lists cannot grow.
+    /// - [`Error::OutOfMemory`] if the impact lists cannot grow (heap storage).
+    /// - [`Error::CapacityExceeded`] if a fixed impact list is full.
     ///
     /// The timeline is unchanged on error.
     pub fn add(&mut self, activity: ActivityId, impact: StateImpact) -> Result<(), Error> {
         self.validate(impact)?;
-        if self.impacts.len() >= self.budget {
-            return Err(Error::BudgetExhausted { limit: self.budget });
-        }
-
-        self.impacts
-            .try_reserve(1)
-            .map_err(|_| Error::OutOfMemory)?;
+        self.ensure_room(1)?;
+        self.impacts.try_reserve(1, Container::Impacts)?;
         match impact {
             StateImpact::Set { at, value } => {
-                self.sets.try_reserve(1).map_err(|_| Error::OutOfMemory)?;
                 let point = SetPoint {
                     at,
                     activity,
                     value,
                 };
                 let index = self.sets.partition_point(|set| set.key() <= point.key());
-                self.sets.insert(index, point);
+                self.sets.try_insert(index, point, Container::Sets)?;
             }
             StateImpact::Require { start, end, value } => {
-                self.requires
-                    .try_reserve(1)
-                    .map_err(|_| Error::OutOfMemory)?;
-                self.requires.push(Requirement {
+                let requirement = Requirement {
                     activity,
                     start,
                     end,
                     value,
-                });
+                };
+                self.requires
+                    .try_push(requirement, Container::Requirements)?;
             }
         }
 
-        self.impacts.push((activity, impact));
-        Ok(())
+        self.impacts
+            .try_push((activity, impact), Container::Impacts)
     }
 
     /// Removes every impact of `activity` and returns how many there were. Never allocates.
@@ -293,17 +326,27 @@ impl StateTimeline {
         core::iter::once(self.start).chain(sets).chain(requires)
     }
 
-    /// `Ok` while the timeline has room for `extra` more impacts.
+    /// `Ok` while the timeline has room for `extra` more impacts, by budget and by capacity.
+    ///
+    /// Sets and requirements are never more than impacts, so the impact capacity covers them.
     ///
     /// # Errors
     ///
-    /// [`Error::BudgetExhausted`] if `extra` more impacts would exceed the budget.
+    /// - [`Error::BudgetExhausted`] if `extra` more impacts would exceed the budget.
+    /// - [`Error::CapacityExceeded`] if they would exceed a fixed impact capacity.
     pub(crate) fn ensure_room(&self, extra: usize) -> Result<(), Error> {
-        if self.impacts.len().saturating_add(extra) > self.budget {
+        let needed = self.impacts.len().saturating_add(extra);
+        if needed > self.budget {
             return Err(Error::BudgetExhausted { limit: self.budget });
         }
 
-        Ok(())
+        match self.impacts.capacity() {
+            Some(capacity) if needed > capacity => Err(Error::CapacityExceeded {
+                container: Container::Impacts,
+                capacity,
+            }),
+            _ => Ok(()),
+        }
     }
 
     /// Checks that `impact` is well formed and does not precede the start.
@@ -352,11 +395,12 @@ impl StateTimeline {
     ///
     /// # Errors
     ///
-    /// [`Error::OutOfMemory`] if the setter list of a conflict cannot be allocated.
-    pub fn first_violation(&self) -> Result<Option<StateViolation>, Error> {
+    /// [`Error::OutOfMemory`] if the setter list of a conflict cannot be allocated (heap
+    /// storage). Fixed storage has room for it by construction.
+    pub fn first_violation(&self) -> Result<Option<StateViolation<S>>, Error> {
         let view = self.view(&[]);
         match view.first_breach(self.initial, &self.requires, &[]) {
-            Some(breach) => view.explain(breach).map(Some),
+            Some(breach) => view.explain::<S>(breach).map(Some),
             None => Ok(None),
         }
     }
@@ -380,4 +424,10 @@ impl StateTimeline {
             extra,
         }
     }
+}
+
+impl<S: Storage> crate::storage::Sealed for StateTimeline<S> {}
+
+impl<S: Storage> Slot for StateTimeline<S> {
+    const EMPTY: Self = Self::new_in(0, 0, 0);
 }

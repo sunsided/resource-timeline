@@ -8,7 +8,13 @@ use crate::{Level, Tick};
 ///
 /// None of these is a resource violation. A violation is a successful check result, see
 /// [`Violation`](crate::Violation).
+///
+/// The enum is `#[non_exhaustive]`: new failure modes (for example of future checks) are added
+/// without a breaking release, so a `match` needs a wildcard arm. Callers that only need the
+/// distinction "retry with more room" versus "malformed input" can use
+/// [`is_capacity`](Self::is_capacity).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Error {
     /// The lower bound is greater than the upper bound, or a claimable capacity is negative.
     InvalidBounds {
@@ -47,6 +53,18 @@ pub enum Error {
     Overflow,
     /// Memory for the impact list or the check could not be allocated.
     OutOfMemory,
+    /// A fixed-capacity container is full.
+    ///
+    /// Only fixed-capacity storage ([`Fixed`](crate::storage::Fixed),
+    /// [`FixedPlan`](crate::storage::FixedPlan)) reports this; heap storage reports
+    /// [`OutOfMemory`](Self::OutOfMemory) instead. The operation that failed left its target
+    /// unchanged.
+    CapacityExceeded {
+        /// Which container ran out of room.
+        container: Container,
+        /// The fixed capacity of that container, in elements.
+        capacity: usize,
+    },
     /// A start window has `earliest > latest`.
     InvalidWindow {
         /// The requested earliest start.
@@ -64,6 +82,66 @@ pub enum Error {
     },
 }
 
+/// The containers a timeline, plan or check keeps, named in [`Error::CapacityExceeded`].
+///
+/// With [`Fixed<N>`](crate::storage::Fixed) storage, the per-timeline containers hold `N`
+/// elements, except [`ChangePoints`](Self::ChangePoints), which holds `2 N` (every impact
+/// changes the level at most at two ticks). [`FixedPlan`](crate::storage::FixedPlan) adds its
+/// own capacities for [`Timelines`](Self::Timelines) and [`States`](Self::States).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
+pub enum Container {
+    /// The impacts of a numeric or state timeline.
+    Impacts,
+    /// The sorted change points of a numeric timeline.
+    ChangePoints,
+    /// The end-state targets of a numeric timeline.
+    Targets,
+    /// The sorted sets of a state timeline.
+    Sets,
+    /// The requirements of a state timeline.
+    Requirements,
+    /// The numeric timelines of a plan.
+    Timelines,
+    /// The state timelines of a plan.
+    States,
+    /// The contributor or setter list of a violation explanation.
+    Contributors,
+    /// Working memory of a check or search, sized like the impacts of one timeline.
+    Scratch,
+}
+
+impl Error {
+    /// Whether the error means "no room": [`OutOfMemory`](Self::OutOfMemory),
+    /// [`CapacityExceeded`](Self::CapacityExceeded) or [`BudgetExhausted`](Self::BudgetExhausted).
+    ///
+    /// These depend on the chosen limits, not on the input being malformed, so a caller may
+    /// retry with larger limits or shed load.
+    #[must_use]
+    pub const fn is_capacity(&self) -> bool {
+        matches!(
+            self,
+            Self::OutOfMemory | Self::CapacityExceeded { .. } | Self::BudgetExhausted { .. }
+        )
+    }
+}
+
+impl fmt::Display for Container {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Impacts => "impact list",
+            Self::ChangePoints => "change-point list",
+            Self::Targets => "target list",
+            Self::Sets => "set list",
+            Self::Requirements => "requirement list",
+            Self::Timelines => "timeline list",
+            Self::States => "state timeline list",
+            Self::Contributors => "contributor list",
+            Self::Scratch => "scratch buffer",
+        })
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
@@ -79,6 +157,10 @@ impl fmt::Display for Error {
             Self::KindMismatch => f.write_str("claimable timelines accept claims only"),
             Self::Overflow => f.write_str("arithmetic overflow"),
             Self::OutOfMemory => f.write_str("allocation failed"),
+            Self::CapacityExceeded {
+                container,
+                capacity,
+            } => write!(f, "{container} is full at {capacity} elements"),
             Self::InvalidWindow { earliest, latest } => {
                 write!(f, "invalid start window [{earliest}, {latest}]")
             }

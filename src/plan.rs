@@ -16,11 +16,12 @@
 
 mod search;
 
-use alloc::vec::Vec;
-
+#[cfg(feature = "alloc")]
+use crate::storage::Heap;
+use crate::storage::{PlanStorage, Seq, Storage};
 use crate::{
-    ActivityId, Error, Impact, StateImpact, StateTimeline, StateViolation, Tick, Timeline,
-    Violation, Window,
+    ActivityId, Container, Error, Impact, StateImpact, StateTimeline, StateViolation, Tick,
+    Timeline, Violation, Window,
 };
 
 /// A handle of a numeric [`Timeline`] in a [`Plan`].
@@ -97,25 +98,30 @@ impl Demand {
 }
 
 /// The earliest violation of a plan and the timeline it occurs on.
+///
+/// `S` is the storage of the plan's timelines, [`PlanStorage::Line`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum PlanViolation {
+pub enum PlanViolation<
+    #[cfg(feature = "alloc")] S: Storage = Heap,
+    #[cfg(not(feature = "alloc"))] S: Storage,
+> {
     /// A numeric timeline leaves its bounds.
     Level {
         /// The violated timeline.
         timeline: TimelineId,
         /// The explanation.
-        violation: Violation,
+        violation: Violation<S>,
     },
     /// A state timeline fails a requirement or has contradicting sets.
     State {
         /// The violated timeline.
         timeline: StateId,
         /// The explanation.
-        violation: StateViolation,
+        violation: StateViolation<S>,
     },
 }
 
-impl PlanViolation {
+impl<S: Storage> PlanViolation<S> {
     /// The tick of the violation.
     #[must_use]
     pub const fn at(&self) -> Tick {
@@ -127,6 +133,11 @@ impl PlanViolation {
 }
 
 /// A set of numeric and state timelines, one per resource, checked together.
+///
+/// The storage `P` is [`Heap`](crate::storage::Heap) by default. With
+/// [`FixedPlan<T, S, N>`](crate::storage::FixedPlan) the plan holds at most `T` numeric and `S`
+/// state timelines with [`Fixed<N>`](crate::storage::Fixed) storage each, and placement,
+/// checks and the earliest-start search never allocate.
 ///
 /// # Examples
 ///
@@ -146,21 +157,52 @@ impl PlanViolation {
 /// assert_eq!(plan.earliest_start(&downlink, window, 1_000)?, Some(13));
 /// # Ok::<(), resource_timeline::Error>(())
 /// ```
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Plan {
+///
+/// The same plan without allocation, for at most two numeric and one state timeline with room
+/// for 16 impacts each:
+///
+/// ```
+/// use resource_timeline::storage::{Fixed, FixedPlan};
+/// use resource_timeline::{ActivityId, Demand, Impact, Plan, Timeline, Window};
+///
+/// let mut plan = Plan::<FixedPlan<2, 1, 16>>::new_in();
+/// let transmitter = plan.add_timeline(Timeline::<Fixed<16>>::claimable_in(0, 1, 16)?)?;
+/// let downlink = [Demand::Level {
+///     timeline: transmitter,
+///     impact: Impact::Claim { start: 0, end: 8, amount: 1 },
+/// }];
+///
+/// plan.place(ActivityId(1), 5, &downlink)?;
+/// assert_eq!(plan.earliest_start(&downlink, Window::new(0, 100)?, 1_000)?, Some(13));
+/// # Ok::<(), resource_timeline::Error>(())
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct Plan<
+    #[cfg(feature = "alloc")] P: PlanStorage = Heap,
+    #[cfg(not(feature = "alloc"))] P: PlanStorage,
+> {
     /// The numeric timelines, addressed by [`TimelineId`].
-    timelines: Vec<Timeline>,
+    timelines: P::Timelines,
     /// The state timelines, addressed by [`StateId`].
-    states: Vec<StateTimeline>,
+    states: P::States,
 }
 
+#[cfg(feature = "alloc")]
 impl Plan {
-    /// Creates an empty plan.
+    /// Creates an empty heap plan.
     #[must_use]
     pub const fn new() -> Self {
+        Self::new_in()
+    }
+}
+
+impl<P: PlanStorage> Plan<P> {
+    /// Creates an empty plan with storage `P`.
+    #[must_use]
+    pub const fn new_in() -> Self {
         Self {
-            timelines: Vec::new(),
-            states: Vec::new(),
+            timelines: <P::Timelines as Seq<_>>::EMPTY,
+            states: <P::States as Seq<_>>::EMPTY,
         }
     }
 
@@ -168,12 +210,11 @@ impl Plan {
     ///
     /// # Errors
     ///
-    /// [`Error::OutOfMemory`] if the timeline list cannot grow.
-    pub fn add_timeline(&mut self, timeline: Timeline) -> Result<TimelineId, Error> {
-        self.timelines
-            .try_reserve(1)
-            .map_err(|_| Error::OutOfMemory)?;
-        self.timelines.push(timeline);
+    /// [`Error::OutOfMemory`] if the timeline list cannot grow (heap storage),
+    /// [`Error::CapacityExceeded`] naming [`Container::Timelines`] if it is full (fixed
+    /// storage).
+    pub fn add_timeline(&mut self, timeline: Timeline<P::Line>) -> Result<TimelineId, Error> {
+        self.timelines.try_push(timeline, Container::Timelines)?;
         Ok(TimelineId(self.timelines.len() - 1))
     }
 
@@ -181,34 +222,34 @@ impl Plan {
     ///
     /// # Errors
     ///
-    /// [`Error::OutOfMemory`] if the timeline list cannot grow.
-    pub fn add_state(&mut self, timeline: StateTimeline) -> Result<StateId, Error> {
-        self.states.try_reserve(1).map_err(|_| Error::OutOfMemory)?;
-        self.states.push(timeline);
+    /// [`Error::OutOfMemory`] if the timeline list cannot grow (heap storage),
+    /// [`Error::CapacityExceeded`] naming [`Container::States`] if it is full (fixed storage).
+    pub fn add_state(&mut self, timeline: StateTimeline<P::Line>) -> Result<StateId, Error> {
+        self.states.try_push(timeline, Container::States)?;
         Ok(StateId(self.states.len() - 1))
     }
 
     /// The numeric timelines, in the order they were added.
     #[must_use]
-    pub fn timelines(&self) -> &[Timeline] {
+    pub fn timelines(&self) -> &[Timeline<P::Line>] {
         &self.timelines
     }
 
     /// The state timelines, in the order they were added.
     #[must_use]
-    pub fn states(&self) -> &[StateTimeline] {
+    pub fn states(&self) -> &[StateTimeline<P::Line>] {
         &self.states
     }
 
     /// The numeric timeline behind `id`, if it belongs to this plan.
     #[must_use]
-    pub fn timeline(&self, id: TimelineId) -> Option<&Timeline> {
+    pub fn timeline(&self, id: TimelineId) -> Option<&Timeline<P::Line>> {
         self.timelines.get(id.0)
     }
 
     /// The state timeline behind `id`, if it belongs to this plan.
     #[must_use]
-    pub fn state(&self, id: StateId) -> Option<&StateTimeline> {
+    pub fn state(&self, id: StateId) -> Option<&StateTimeline<P::Line>> {
         self.states.get(id.0)
     }
 
@@ -223,7 +264,8 @@ impl Plan {
     /// - [`Error::UnknownResource`] if a demand names a timeline outside this plan.
     /// - [`Error::Overflow`] if a shifted tick does not fit a [`Tick`].
     /// - The validation errors of [`Timeline::add`] and [`StateTimeline::add`], including
-    ///   [`Error::BudgetExhausted`].
+    ///   [`Error::BudgetExhausted`] and, with fixed storage, [`Error::CapacityExceeded`]. Both
+    ///   are detected before anything is added.
     /// - [`Error::OutOfMemory`] if an impact list cannot grow.
     ///
     /// The plan is unchanged on error.
@@ -267,8 +309,8 @@ impl Plan {
     /// # Errors
     ///
     /// The errors of [`Timeline::first_violation`] and [`StateTimeline::first_violation`].
-    pub fn first_violation(&self) -> Result<Option<PlanViolation>, Error> {
-        let mut earliest: Option<PlanViolation> = None;
+    pub fn first_violation(&self) -> Result<Option<PlanViolation<P::Line>>, Error> {
+        let mut earliest: Option<PlanViolation<P::Line>> = None;
         for (index, timeline) in self.timelines.iter().enumerate() {
             if let Some(violation) = timeline.first_violation()? {
                 let found = PlanViolation::Level {
@@ -306,7 +348,10 @@ impl Plan {
     /// - [`Error::Overflow`] if a shifted tick or a level does not fit.
     /// - The validation errors of [`Timeline::add`] and [`StateTimeline::add`] other than
     ///   [`Error::BeforeStart`], which mean the demands are malformed at every start.
-    /// - [`Error::OutOfMemory`] if the scratch buffers cannot be allocated.
+    /// - [`Error::OutOfMemory`] if the scratch buffers cannot be allocated (heap storage).
+    /// - [`Error::CapacityExceeded`] naming [`Container::Scratch`] if more demands address one
+    ///   timeline than its fixed capacity holds (fixed storage); such an activity could not be
+    ///   placed either.
     pub fn fits(&self, demands: &[Demand], start: Tick) -> Result<bool, Error> {
         search::Probe::new(self, demands)?.fits(start)
     }
@@ -388,7 +433,7 @@ impl Plan {
 }
 
 /// Replaces `earliest` with `found` if `found` is strictly earlier or `earliest` is empty.
-fn keep_earlier(earliest: &mut Option<PlanViolation>, found: PlanViolation) {
+fn keep_earlier<S: Storage>(earliest: &mut Option<PlanViolation<S>>, found: PlanViolation<S>) {
     if earliest
         .as_ref()
         .is_none_or(|current| found.at() < current.at())
@@ -397,7 +442,7 @@ fn keep_earlier(earliest: &mut Option<PlanViolation>, found: PlanViolation) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "alloc"))]
 mod tests {
     //! Unit tests of the rollback path, which `place` reaches only on allocation failure.
 

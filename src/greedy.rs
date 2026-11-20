@@ -7,6 +7,7 @@
 
 use alloc::vec::Vec;
 
+use crate::storage::PlanStorage;
 use crate::{ActivityId, Demand, Error, Plan, Tick, Window};
 
 /// An activity the greedy scheduler should place.
@@ -60,8 +61,8 @@ pub struct Request<'a> {
 /// assert_eq!(schedule(&mut plan, &requests, 1_000)?, [None, Some(0), Some(10)]);
 /// # Ok::<(), resource_timeline::Error>(())
 /// ```
-pub fn schedule(
-    plan: &mut Plan,
+pub fn schedule<P: PlanStorage>(
+    plan: &mut Plan<P>,
     requests: &[Request<'_>],
     max_checks: usize,
 ) -> Result<Vec<Option<Tick>>, Error> {
@@ -95,8 +96,8 @@ fn priority_order(requests: &[Request<'_>]) -> Result<Vec<usize>, Error> {
 }
 
 /// Places `request` at its earliest feasible start and returns that start, if any.
-fn place_earliest(
-    plan: &mut Plan,
+fn place_earliest<P: PlanStorage>(
+    plan: &mut Plan<P>,
     request: &Request<'_>,
     max_checks: usize,
 ) -> Result<Option<Tick>, Error> {

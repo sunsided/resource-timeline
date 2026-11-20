@@ -9,35 +9,41 @@
 //! between consecutive candidates, and the earliest fitting start is the window start or one of
 //! them. Rates break this, because a level then also depends on the distance between ticks.
 
-use alloc::vec::Vec;
-
 use super::{Demand, Plan};
 use crate::state::{Requirement, SetPoint};
+use crate::storage::{PlanStorage, Seq, Storage};
 use crate::timeline::profile::Point;
-use crate::{Error, Impact, StateImpact, Tick, Window};
+use crate::{Container, Error, Impact, StateImpact, Tick, Timeline, Window};
+
+/// The scratch list types of a probe on plan storage `P`.
+type Line<P> = <P as PlanStorage>::Line;
 
 /// Reusable scratch space for checking one activity at many candidate starts.
-pub(super) struct Probe<'a> {
+pub(super) struct Probe<'a, P: PlanStorage> {
     /// The plan the activity is checked against.
-    plan: &'a Plan,
+    plan: &'a Plan<P>,
     /// The demands of the activity, relative to its start.
     demands: &'a [Demand],
     /// Change points of the shifted demands on the numeric timeline being checked.
-    points: Vec<Point>,
+    points: <Line<P> as Storage>::DoubleList<Point>,
     /// Sets of the shifted demands on the state timeline being checked.
-    sets: Vec<SetPoint>,
+    sets: <Line<P> as Storage>::List<SetPoint>,
     /// Requirements of the shifted demands on the state timeline being checked.
-    requires: Vec<Requirement>,
+    requires: <Line<P> as Storage>::List<Requirement>,
 }
 
-impl<'a> Probe<'a> {
+impl<'a, P: PlanStorage> Probe<'a, P> {
     /// Prepares scratch space for `demands`.
+    ///
+    /// Reserves room for the largest number of demands on any one timeline, so that
+    /// [`fits`](Self::fits) never allocates.
     ///
     /// # Errors
     ///
     /// - [`Error::UnknownResource`] if a demand names a timeline outside `plan`.
-    /// - [`Error::OutOfMemory`] if the scratch buffers cannot be allocated.
-    pub(super) fn new(plan: &'a Plan, demands: &'a [Demand]) -> Result<Self, Error> {
+    /// - [`Error::OutOfMemory`] or [`Error::CapacityExceeded`] if the scratch buffers cannot
+    ///   be allocated.
+    pub(super) fn new(plan: &'a Plan<P>, demands: &'a [Demand]) -> Result<Self, Error> {
         for demand in demands {
             let known = match *demand {
                 Demand::Level { timeline, .. } => plan.timeline(timeline).is_some(),
@@ -51,23 +57,16 @@ impl<'a> Probe<'a> {
         let mut probe = Self {
             plan,
             demands,
-            points: Vec::new(),
-            sets: Vec::new(),
-            requires: Vec::new(),
+            points: Seq::EMPTY,
+            sets: Seq::EMPTY,
+            requires: Seq::EMPTY,
         };
-        let reserve = |len: usize| len.saturating_mul(2);
+        let most = most_on_one_timeline(demands);
         probe
             .points
-            .try_reserve(reserve(demands.len()))
-            .map_err(|_| Error::OutOfMemory)?;
-        probe
-            .sets
-            .try_reserve(demands.len())
-            .map_err(|_| Error::OutOfMemory)?;
-        probe
-            .requires
-            .try_reserve(demands.len())
-            .map_err(|_| Error::OutOfMemory)?;
+            .try_reserve(most.saturating_mul(2), Container::Scratch)?;
+        probe.sets.try_reserve(most, Container::Scratch)?;
+        probe.requires.try_reserve(most, Container::Scratch)?;
         Ok(probe)
     }
 
@@ -127,7 +126,8 @@ impl<'a> Probe<'a> {
                 return Ok(false);
             };
             for (at, step, slope) in impact.changes().into_iter().flatten() {
-                self.points.push(Point { at, step, slope });
+                self.points
+                    .try_push(Point::loose(at, step, slope), Container::Scratch)?;
             }
         }
 
@@ -155,7 +155,7 @@ impl<'a> Probe<'a> {
                 Err(error) => return Err(error),
             }
 
-            self.push_state(shifted);
+            self.push_state(shifted)?;
         }
 
         self.sets.sort_unstable_by_key(SetPoint::key);
@@ -163,29 +163,53 @@ impl<'a> Probe<'a> {
     }
 
     /// Stores one shifted, validated state impact in the scratch lists.
-    fn push_state(&mut self, impact: StateImpact) {
+    ///
+    /// # Errors
+    ///
+    /// None in practice: [`new`](Self::new) reserved the room.
+    fn push_state(&mut self, impact: StateImpact) -> Result<(), Error> {
         // The probe's own activity id is irrelevant for the yes/no answer; any fixed id works.
         let activity = crate::ActivityId(u32::MAX);
         match impact {
-            StateImpact::Set { at, value } => self.sets.push(SetPoint {
-                at,
-                activity,
-                value,
-            }),
-            StateImpact::Require { start, end, value } => self.requires.push(Requirement {
-                activity,
-                start,
-                end,
-                value,
-            }),
+            StateImpact::Set { at, value } => {
+                let set = SetPoint {
+                    at,
+                    activity,
+                    value,
+                };
+                self.sets.try_push(set, Container::Scratch)
+            }
+            StateImpact::Require { start, end, value } => {
+                let requirement = Requirement {
+                    activity,
+                    start,
+                    end,
+                    value,
+                };
+                self.requires.try_push(requirement, Container::Scratch)
+            }
         }
     }
 }
 
+/// The largest number of demands that address the same timeline.
+fn most_on_one_timeline(demands: &[Demand]) -> usize {
+    demands
+        .iter()
+        .map(|demand| {
+            demands
+                .iter()
+                .filter(|other| other.same_timeline(demand))
+                .count()
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 /// `impact` shifted to `start` if the timeline accepts it there, `None` if it would precede
 /// the timeline start.
-fn admissible(
-    timeline: &crate::Timeline,
+fn admissible<S: Storage>(
+    timeline: &Timeline<S>,
     impact: Impact,
     start: Tick,
 ) -> Result<Option<Impact>, Error> {
@@ -199,8 +223,8 @@ fn admissible(
 
 /// Finds the earliest start in `window` at which `demands` fit, checking at most `max_checks`
 /// candidates.
-pub(super) fn earliest_start(
-    plan: &Plan,
+pub(super) fn earliest_start<P: PlanStorage>(
+    plan: &Plan<P>,
     demands: &[Demand],
     window: Window,
     max_checks: usize,
@@ -232,10 +256,13 @@ pub(super) fn earliest_start(
         return Ok(None);
     }
 
-    for start in candidates(plan, demands, window)? {
-        if check(start)? {
-            return Ok(Some(start));
+    let mut start = Some(window.earliest());
+    while let Some(candidate) = start {
+        if check(candidate)? {
+            return Ok(Some(candidate));
         }
+
+        start = next_candidate(plan, demands, candidate, window);
     }
 
     Ok(None)
@@ -243,7 +270,11 @@ pub(super) fn earliest_start(
 
 /// `window` without the starts at which a demand would precede its timeline's start, or
 /// `None` if no start is left.
-fn admissible_window(plan: &Plan, demands: &[Demand], window: Window) -> Option<Window> {
+fn admissible_window<P: PlanStorage>(
+    plan: &Plan<P>,
+    demands: &[Demand],
+    window: Window,
+) -> Option<Window> {
     let mut earliest = i128::from(window.earliest());
     for demand in demands {
         let timeline_start = match *demand {
@@ -258,7 +289,7 @@ fn admissible_window(plan: &Plan, demands: &[Demand], window: Window) -> Option<
 }
 
 /// Whether a demand or a touched numeric timeline has a rate.
-fn involves_rates(plan: &Plan, demands: &[Demand]) -> bool {
+fn involves_rates<P: PlanStorage>(plan: &Plan<P>, demands: &[Demand]) -> bool {
     demands.iter().any(|demand| match *demand {
         Demand::Level { timeline, impact } => {
             impact.is_rate() || plan.timelines[timeline.0].has_rates()
@@ -267,64 +298,45 @@ fn involves_rates(plan: &Plan, demands: &[Demand]) -> bool {
     })
 }
 
-/// The window start and every start in `window` where a demand tick meets a change tick of
-/// its timeline, sorted and without duplicates.
-fn candidates(plan: &Plan, demands: &[Demand], window: Window) -> Result<Vec<Tick>, Error> {
-    let mut starts = Vec::new();
-    starts.try_reserve(1).map_err(|_| Error::OutOfMemory)?;
-    starts.push(window.earliest());
+/// The smallest start in `window` after `after` where a demand tick meets a change tick of
+/// its timeline, or the tick after one, so that the comparison of the two changes.
+///
+/// Enumerating candidates one at a time this way needs no memory. Each call costs `O(n k)` for
+/// `n` change ticks and `k` demands, the same order as checking one candidate.
+fn next_candidate<P: PlanStorage>(
+    plan: &Plan<P>,
+    demands: &[Demand],
+    after: Tick,
+    window: Window,
+) -> Option<Tick> {
+    let mut next: Option<Tick> = None;
+    let mut consider = |tick: Tick, offset: Tick| {
+        let meet = i128::from(tick) - i128::from(offset);
+        for start in [meet, meet + 1] {
+            let Ok(start) = Tick::try_from(start) else {
+                continue;
+            };
+
+            if start > after && window.contains(start) && next.is_none_or(|next| start < next) {
+                next = Some(start);
+            }
+        }
+    };
 
     for demand in demands {
-        let ticks: Vec<Tick> = match *demand {
-            Demand::Level { timeline, .. } => {
-                let timeline = &plan.timelines[timeline.0];
-                collect(core::iter::once(timeline.start()).chain(timeline.change_ticks()))?
-            }
-            Demand::State { timeline, .. } => collect(plan.states[timeline.0].change_ticks())?,
-        };
-
         for offset in demand.offsets() {
-            for &tick in &ticks {
-                push_meets(&mut starts, tick, offset, window)?;
+            match *demand {
+                Demand::Level { timeline, .. } => {
+                    let timeline = &plan.timelines[timeline.0];
+                    let ticks = core::iter::once(timeline.start()).chain(timeline.change_ticks());
+                    ticks.for_each(|tick| consider(tick, offset));
+                }
+                Demand::State { timeline, .. } => plan.states[timeline.0]
+                    .change_ticks()
+                    .for_each(|tick| consider(tick, offset)),
             }
         }
     }
 
-    starts.sort_unstable();
-    starts.dedup();
-    Ok(starts)
-}
-
-/// Pushes the starts in `window` at which demand offset `offset` lands on `tick` or one tick
-/// before it, so that the comparison of the two changes.
-fn push_meets(
-    starts: &mut Vec<Tick>,
-    tick: Tick,
-    offset: Tick,
-    window: Window,
-) -> Result<(), Error> {
-    let meet = i128::from(tick) - i128::from(offset);
-    for start in [meet, meet + 1] {
-        let Ok(start) = Tick::try_from(start) else {
-            continue;
-        };
-
-        if window.contains(start) {
-            starts.try_reserve(1).map_err(|_| Error::OutOfMemory)?;
-            starts.push(start);
-        }
-    }
-
-    Ok(())
-}
-
-/// Collects `ticks` into a vector without aborting on allocation failure.
-fn collect(ticks: impl Iterator<Item = Tick>) -> Result<Vec<Tick>, Error> {
-    let mut collected = Vec::new();
-    for tick in ticks {
-        collected.try_reserve(1).map_err(|_| Error::OutOfMemory)?;
-        collected.push(tick);
-    }
-
-    Ok(collected)
+    next
 }
