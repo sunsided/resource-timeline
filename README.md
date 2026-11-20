@@ -24,6 +24,13 @@ Resource timelines for onboard scheduling: energy, memory, thermal and communica
   violated for every schedule the windows admit, with uncertain durations (claims and rates
   anchored at the activity end), precedence constraints (window propagation plus an exact
   min-cut extreme for stepwise activities), and state envelopes for requirements and conflicts
+- Precedences between starts and ends (contingent ends included), coupled exactly by a
+  minimum cut within a node budget
+- A compact, versioned, CRC-32-checked byte encoding of timelines and profiles without
+  allocation, and optional `serde` support (feature `serde`)
+- Borrowed search scratch for small onboard stacks (`SearchScratch`)
+- A bridge example that checks a schedule with the windows of `temporal-control`'s dispatcher,
+  see `examples/stn_bridge.rs`
 - Brute-force oracles for every check, compared in property tests
 - Companion to temporal-control, without a dependency on it
 

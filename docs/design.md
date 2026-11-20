@@ -263,6 +263,25 @@ so placement stays atomic. Change points are reference-counted, so
 removing an impact never inserts a point and stays infallible at full
 capacity.
 
+## Encoding
+
+`codec` writes `LevelProfile`, `Timeline` and `StateTimeline` into a
+caller's buffer without allocation: a 4-byte magic per type, a version
+byte, a reserved flags byte, fixed-size little-endian records and a CRC-32
+(IEEE) trailer. Decoding verifies magic, version, length and checksum, then
+replays the content through the validating constructors into any storage.
+With the `serde` feature the plain data types derive `serde`, `Bounds` and
+`Window` validate on deserialization, and timelines and profiles serialize
+by content (deserializing them needs `alloc`).
+
+## Stack budget
+
+With `Fixed<N>` the plan search keeps `216 N + 128` bytes of scratch (58 KiB
+for `N = 256`) on the stack. `SearchScratch` with `fits_with` and
+`earliest_start_with` moves it to caller memory; measured on x86-64, the
+search then fits a 16 KiB thread stack. Explaining a violation still keeps a
+`32 N`-byte list on the stack.
+
 ## Profile extraction
 
 `Timeline::breakpoints` iterates the ticks where the level line jumps or
@@ -383,8 +402,8 @@ a small common crate only then, per the ecosystem rule for `search-core`.
   nothing.
 - Is the default cut budget of 4096 nodes right, and should the fallback
   above it rather report an error than a sound but loose envelope?
-- Should `LevelProfile` get a byte encoding (or `serde` behind a feature)
-  for downlink, or is the plain `Copy` breakpoint list enough?
+- Should violation explanations also accept borrowed scratch, to remove the
+  last `O(N)` stack buffer?
 - Should claimable resources also support fractional claims of a shared
   pool (for example power channels), or is that simply a depletable
   resource with paired steps? Milestone 1 treats both the same way.
