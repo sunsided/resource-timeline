@@ -54,12 +54,14 @@ extern crate alloc;
 mod activity;
 mod error;
 mod impact;
+mod state;
 mod timeline;
 mod violation;
 
 pub use activity::ActivityId;
 pub use error::Error;
 pub use impact::Impact;
+pub use state::{StateImpact, StateTimeline, StateValue, StateViolation};
 pub use timeline::{Bounds, Kind, Timeline};
 pub use violation::{Bound, Violation};
 

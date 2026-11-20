@@ -4,3 +4,4 @@ mod edge_cases;
 mod errors;
 mod oracle;
 mod properties;
+mod state;

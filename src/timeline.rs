@@ -51,7 +51,7 @@ impl Bounds {
 /// | --- | --- | --- |
 /// | Energy, data volume, propellant (consumable, cumulative) | [`Depletable`](Self::Depletable) | [`Impact::Step`] for lumps, [`Impact::Rate`] for charge, discharge or drift |
 /// | Power bus share, comm channel, instrument (reusable) | [`Claimable`](Self::Claimable) | [`Impact::Claim`] |
-/// | Mode, visibility window | not numeric | a state timeline |
+/// | Mode, visibility window | not numeric | see [`StateTimeline`](crate::StateTimeline) |
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Kind {
     /// Consumed and produced by permanent changes, for example energy or data volume.
