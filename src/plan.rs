@@ -17,6 +17,7 @@
 mod search;
 
 pub(crate) use search::Offsets;
+pub use search::SearchScratch;
 
 #[cfg(feature = "alloc")]
 use crate::storage::Heap;
@@ -371,7 +372,21 @@ impl<P: PlanStorage> Plan<P> {
     ///   timeline than its fixed capacity holds (fixed storage); such an activity could not be
     ///   placed either.
     pub fn fits(&self, demands: &[Demand], start: Tick) -> Result<bool, Error> {
-        search::Probe::new(self, demands)?.fits(start)
+        self.fits_with(demands, start, &mut SearchScratch::new())
+    }
+
+    /// [`fits`](Self::fits) with borrowed working memory instead of a stack buffer.
+    ///
+    /// # Errors
+    ///
+    /// As for [`fits`](Self::fits).
+    pub fn fits_with(
+        &self,
+        demands: &[Demand],
+        start: Tick,
+        scratch: &mut SearchScratch<P::Line>,
+    ) -> Result<bool, Error> {
+        search::Probe::new(self, demands, scratch)?.fits(start)
     }
 
     /// The earliest start in `window` at which [`fits`](Self::fits) holds, or `None`.
@@ -397,7 +412,23 @@ impl<P: PlanStorage> Plan<P> {
         window: Window,
         max_checks: usize,
     ) -> Result<Option<Tick>, Error> {
-        search::earliest_start(self, demands, window, max_checks)
+        self.earliest_start_with(demands, window, max_checks, &mut SearchScratch::new())
+    }
+
+    /// [`earliest_start`](Self::earliest_start) with borrowed working memory instead of a
+    /// stack buffer; see [`SearchScratch`] for sizes and an example.
+    ///
+    /// # Errors
+    ///
+    /// As for [`earliest_start`](Self::earliest_start).
+    pub fn earliest_start_with(
+        &self,
+        demands: &[Demand],
+        window: Window,
+        max_checks: usize,
+        scratch: &mut SearchScratch<P::Line>,
+    ) -> Result<Option<Tick>, Error> {
+        search::earliest_start(self, demands, window, max_checks, scratch)
     }
 
     /// `demand` moved to absolute ticks for an activity starting at `start`.

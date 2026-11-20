@@ -200,3 +200,44 @@ fn target_capacity() {
     );
     assert_eq!(timeline, before);
 }
+
+/// With borrowed scratch the fixed search runs in a small thread stack even for a large
+/// capacity; the scratch alone is larger than that stack.
+#[test]
+fn borrowed_scratch_runs_in_a_small_stack() {
+    use resource_timeline::SearchScratch;
+
+    let mut plan = Box::new(Plan::<FixedPlan<1, 0, 256>>::new_in());
+    let antenna = plan
+        .add_timeline(Timeline::claimable_in(0, 1, 256).expect("valid"))
+        .expect("room");
+    let pass = |length| {
+        [Demand::Level {
+            timeline: antenna,
+            impact: Impact::Claim {
+                start: 0,
+                end: length,
+                amount: 1,
+            },
+        }]
+    };
+    for id in 0..100 {
+        plan.place(ActivityId(id), i64::from(id) * 10, &pass(8))
+            .expect("room");
+    }
+
+    let mut scratch = Box::new(SearchScratch::<Fixed<256>>::new());
+    assert!(size_of::<SearchScratch<Fixed<256>>>() > 48 * 1024);
+    let window = Window::new(0, 10_000).expect("valid");
+    let found = std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(48 * 1024)
+            .spawn_scoped(scope, || {
+                plan.earliest_start_with(&pass(5), window, 100_000, &mut scratch)
+            })
+            .expect("spawn")
+            .join()
+            .expect("no overflow")
+    });
+    assert_eq!(found, Ok(Some(998)));
+}

@@ -31,20 +31,80 @@ use crate::{Container, Error, Impact, StateImpact, Tick, Timeline, Window};
 /// The scratch list types of a probe on plan storage `P`.
 type Line<P> = <P as PlanStorage>::Line;
 
-/// Reusable scratch space for checking one activity at many candidate starts.
+/// Working memory of [`Plan::fits`](super::Plan::fits) and
+/// [`Plan::earliest_start`](super::Plan::earliest_start), for callers that keep it outside the
+/// stack.
+///
+/// With [`Fixed<N>`](crate::storage::Fixed) storage it holds two change-point lists of `2 N`
+/// points and a set and a requirement list of `N` entries, `216 N + 128` bytes on 64-bit
+/// targets: 58 KiB for `N = 256`. `fits` and `earliest_start` put it on the stack;
+/// [`Plan::fits_with`](super::Plan::fits_with) and
+/// [`Plan::earliest_start_with`](super::Plan::earliest_start_with) borrow one instead, for
+/// example from a `static` or a task's own memory. Measured on x86-64 (release, frame sizes
+/// from `-Z emit-stack-sizes`, confirmed by running in threads of shrinking stack): a search
+/// over a `FixedPlan<2, 1, 256>` needs about 60 KiB of stack with the internal scratch and
+/// fits in a 16 KiB thread stack with a borrowed one; its largest frame is the 2.4 KiB of the
+/// change-point sort. Explaining a violation (`first_violation`) keeps its own per-activity
+/// working list of `32 N` bytes on the stack, about 16 KiB for `N = 256`.
+///
+/// # Examples
+///
+/// ```
+/// use resource_timeline::storage::{Fixed, FixedPlan};
+/// use resource_timeline::{ActivityId, Demand, Impact, Plan, SearchScratch, Timeline, Window};
+///
+/// let mut plan = Plan::<FixedPlan<1, 0, 64>>::new_in();
+/// let transmitter = plan.add_timeline(Timeline::claimable_in(0, 1, 64)?)?;
+/// let downlink = [Demand::Level {
+///     timeline: transmitter,
+///     impact: Impact::Claim { start: 0, end: 8, amount: 1 },
+/// }];
+/// plan.place(ActivityId(1), 5, &downlink)?;
+///
+/// let mut scratch = SearchScratch::<Fixed<64>>::new();
+/// let window = Window::new(0, 100)?;
+/// assert_eq!(plan.earliest_start_with(&downlink, window, 1_000, &mut scratch)?, Some(13));
+/// # Ok::<(), resource_timeline::Error>(())
+/// ```
+#[derive(Debug, Clone)]
+pub struct SearchScratch<S: Storage> {
+    /// Change points of the shifted demands on the numeric timeline being checked.
+    points: S::DoubleList<Point>,
+    /// The same change points for a start one tick later, for the closed-form solve.
+    points_next: S::DoubleList<Point>,
+    /// Sets of the shifted demands on the state timeline being checked.
+    sets: S::List<SetPoint>,
+    /// Requirements of the shifted demands on the state timeline being checked.
+    requires: S::List<Requirement>,
+}
+
+impl<S: Storage> SearchScratch<S> {
+    /// Empty working memory.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            points: <S::DoubleList<Point> as Seq<_>>::EMPTY,
+            points_next: <S::DoubleList<Point> as Seq<_>>::EMPTY,
+            sets: <S::List<SetPoint> as Seq<_>>::EMPTY,
+            requires: <S::List<Requirement> as Seq<_>>::EMPTY,
+        }
+    }
+}
+
+impl<S: Storage> Default for SearchScratch<S> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Checks one activity at many candidate starts, with borrowed working memory.
 pub(super) struct Probe<'a, P: PlanStorage> {
     /// The plan the activity is checked against.
     plan: &'a Plan<P>,
     /// The demands of the activity, relative to its start.
     demands: &'a [Demand],
-    /// Change points of the shifted demands on the numeric timeline being checked.
-    points: <Line<P> as Storage>::DoubleList<Point>,
-    /// The same change points for a start one tick later, for the closed-form solve.
-    points_next: <Line<P> as Storage>::DoubleList<Point>,
-    /// Sets of the shifted demands on the state timeline being checked.
-    sets: <Line<P> as Storage>::List<SetPoint>,
-    /// Requirements of the shifted demands on the state timeline being checked.
-    requires: <Line<P> as Storage>::List<Requirement>,
+    /// The working memory.
+    scratch: &'a mut SearchScratch<Line<P>>,
 }
 
 impl<'a, P: PlanStorage> Probe<'a, P> {
@@ -58,7 +118,11 @@ impl<'a, P: PlanStorage> Probe<'a, P> {
     /// - [`Error::UnknownResource`] if a demand names a timeline outside `plan`.
     /// - [`Error::OutOfMemory`] or [`Error::CapacityExceeded`] if the scratch buffers cannot
     ///   be allocated.
-    pub(super) fn new(plan: &'a Plan<P>, demands: &'a [Demand]) -> Result<Self, Error> {
+    pub(super) fn new(
+        plan: &'a Plan<P>,
+        demands: &'a [Demand],
+        scratch: &'a mut SearchScratch<Line<P>>,
+    ) -> Result<Self, Error> {
         for demand in demands {
             let known = match *demand {
                 Demand::Level { timeline, .. } => plan.timeline(timeline).is_some(),
@@ -69,22 +133,21 @@ impl<'a, P: PlanStorage> Probe<'a, P> {
             }
         }
 
-        let mut probe = Self {
-            plan,
-            demands,
-            points: Seq::EMPTY,
-            points_next: Seq::EMPTY,
-            sets: Seq::EMPTY,
-            requires: Seq::EMPTY,
-        };
         let most = most_on_one_timeline(demands);
-        for points in [&mut probe.points, &mut probe.points_next] {
+        for points in [&mut scratch.points, &mut scratch.points_next] {
+            points.clear();
             points.try_reserve(most.saturating_mul(2), Container::Scratch)?;
         }
 
-        probe.sets.try_reserve(most, Container::Scratch)?;
-        probe.requires.try_reserve(most, Container::Scratch)?;
-        Ok(probe)
+        scratch.sets.clear();
+        scratch.requires.clear();
+        scratch.sets.try_reserve(most, Container::Scratch)?;
+        scratch.requires.try_reserve(most, Container::Scratch)?;
+        Ok(Self {
+            plan,
+            demands,
+            scratch,
+        })
     }
 
     /// Whether the activity fits when it starts at `start`. Never allocates.
@@ -137,20 +200,24 @@ impl<'a, P: PlanStorage> Probe<'a, P> {
                 self.demands,
                 &representative,
                 lo,
-                &mut self.points,
+                &mut self.scratch.points,
             )?;
             let second = collect_points(
                 timeline,
                 self.demands,
                 &representative,
                 lo + 1,
-                &mut self.points_next,
+                &mut self.scratch.points_next,
             )?;
             if !(first && second) {
                 return Ok(None);
             }
 
-            timeline.narrow(&self.points, &self.points_next, &mut offsets)?;
+            timeline.narrow(
+                &self.scratch.points,
+                &self.scratch.points_next,
+                &mut offsets,
+            )?;
             if offsets.is_empty() {
                 return Ok(None);
             }
@@ -180,12 +247,12 @@ impl<'a, P: PlanStorage> Probe<'a, P> {
                     self.demands,
                     representative,
                     start,
-                    &mut self.points,
+                    &mut self.scratch.points,
                 )? {
                     return Ok(false);
                 }
 
-                Ok(timeline.breach_with(&self.points)?.is_none())
+                Ok(timeline.breach_with(&self.scratch.points)?.is_none())
             }
             Demand::State { timeline, .. } => {
                 let timeline = &self.plan.states[timeline.0];
@@ -193,7 +260,7 @@ impl<'a, P: PlanStorage> Probe<'a, P> {
                     return Ok(false);
                 }
 
-                Ok(!timeline.is_violated_with(&self.sets, &self.requires))
+                Ok(!timeline.is_violated_with(&self.scratch.sets, &self.scratch.requires))
             }
         }
     }
@@ -201,8 +268,8 @@ impl<'a, P: PlanStorage> Probe<'a, P> {
     /// Fills `sets` and `requires` with the shifted state demands on the timeline of
     /// `representative`. Returns `false` if one of them would precede the timeline start.
     fn collect_states(&mut self, representative: &Demand, start: Tick) -> Result<bool, Error> {
-        self.sets.clear();
-        self.requires.clear();
+        self.scratch.sets.clear();
+        self.scratch.requires.clear();
         for demand in self.demands {
             let Demand::State { timeline, impact } = *demand else {
                 continue;
@@ -221,7 +288,7 @@ impl<'a, P: PlanStorage> Probe<'a, P> {
             self.push_state(shifted)?;
         }
 
-        self.sets.sort_unstable_by_key(SetPoint::key);
+        self.scratch.sets.sort_unstable_by_key(SetPoint::key);
         Ok(true)
     }
 
@@ -240,7 +307,7 @@ impl<'a, P: PlanStorage> Probe<'a, P> {
                     activity,
                     value,
                 };
-                self.sets.try_push(set, Container::Scratch)
+                self.scratch.sets.try_push(set, Container::Scratch)
             }
             StateImpact::Require { start, end, value } => {
                 let requirement = Requirement {
@@ -249,7 +316,9 @@ impl<'a, P: PlanStorage> Probe<'a, P> {
                     end,
                     value,
                 };
-                self.requires.try_push(requirement, Container::Scratch)
+                self.scratch
+                    .requires
+                    .try_push(requirement, Container::Scratch)
             }
         }
     }
@@ -328,8 +397,9 @@ pub(super) fn earliest_start<P: PlanStorage>(
     demands: &[Demand],
     window: Window,
     max_checks: usize,
+    scratch: &mut SearchScratch<Line<P>>,
 ) -> Result<Option<Tick>, Error> {
-    let mut probe = Probe::new(plan, demands)?;
+    let mut probe = Probe::new(plan, demands, scratch)?;
     let Some(window) = admissible_window(plan, demands, window) else {
         return Ok(None);
     };

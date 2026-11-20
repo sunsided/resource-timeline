@@ -122,7 +122,7 @@ mod window;
 pub use activity::ActivityId;
 pub use error::{Container, Error};
 pub use impact::Impact;
-pub use plan::{Demand, Plan, PlanViolation, StateId, TimelineId};
+pub use plan::{Demand, Plan, PlanViolation, SearchScratch, StateId, TimelineId};
 pub use state::{StateImpact, StateTimeline, StateValue, StateViolation};
 pub use target::Target;
 pub use timeline::extract::{Breakpoint, Breakpoints, LevelProfile, Samples};
