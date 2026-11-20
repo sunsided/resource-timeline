@@ -1,6 +1,8 @@
 # resource-timeline: design
 
-Status: draft. Milestone 1 is implemented; everything after it is a plan.
+Status: draft. Milestones 1 to 5 and the incremental part of milestone 6 are
+implemented; fixed-capacity storage and the items marked *not implemented*
+are plans.
 
 ## Purpose
 
@@ -36,7 +38,7 @@ here.
 - Explicit budgets. Every container has a caller-chosen capacity limit.
   Exceeding it returns an error, it never aborts on allocation.
 - `#![forbid(unsafe_code)]`.
-- No runtime dependencies unless strongly justified. Milestone 1 has none.
+- No runtime dependencies unless strongly justified. There are none.
 - Deterministic results: the outcome of a check does not depend on the
   order in which impacts were added.
 
@@ -49,14 +51,15 @@ here.
 | Rate-based | energy under a power draw, data under a downlink rate | Level changes linearly while an activity runs | as depletable |
 | State | "instrument warm", "heater on", "pointing at Earth" | Discrete value set by activities; others require a value | equality, not range |
 
-Depletable and claimable resources share one representation in milestone 1.
+Depletable and claimable resources share one representation.
 For a claimable resource the level is the number of *available* units: it
 starts at capacity, a claim lowers it for `[start, end)`, and the lower
 bound `0` is the "no double-booking" rule.
 
-Rate-based resources need piecewise-linear profiles (milestone 2).
-State timelines are a separate type (milestone 4) because their constraint
-is "the value equals X throughout an interval", not a numeric range.
+Rate-based resources are depletable timelines with `Rate` impacts, which
+make the profile piecewise linear (milestone 2). State timelines are a
+separate type, `StateTimeline` (milestone 4), because their constraint is
+"the value equals X throughout an interval", not a numeric range.
 
 Thermal limits are modelled at this level only as budgets, for example a
 depletable "thermal margin" or a claimable "heater power slot". A physical
@@ -76,7 +79,7 @@ thermal model belongs to `polyzonotope-reach`, not here.
 
 ## Timeline representation
 
-### Milestone 1: piecewise-constant
+### Milestone 1: piecewise-constant (superseded by the change-point profile below)
 
 The level is a step function of time:
 
@@ -94,7 +97,17 @@ capacity-1 resource pass. Between events the level is constant, so
 comparing once per distinct event tick (plus the initial segment) checks
 every tick. Cost: `O(n log n)` time, `O(n)` memory for `n` impacts.
 
-### Milestone 2: piecewise-linear
+### Milestone 2: piecewise-linear (implemented)
+
+Implementation: the timeline keeps, next to its impact list, a sorted list
+of change points `(tick, level jump, slope change)`, one per tick, updated
+incrementally on `add` and `remove` (binary search plus a shift). A check
+sweeps the points once in `O(n)` without sorting or allocating. Inside a
+segment with slope `m` that starts in bounds at level `L`, the first
+crossing of `min` is at `floor((L - min) / |m|) + 1` ticks, so the
+reported tick is exact without stepping tick by tick.
+
+Original plan:
 
 Rate-based impacts add a slope over an interval: `Rate { start, end,
 per_tick }`. The level becomes piecewise-linear. Extremes of a linear
@@ -115,9 +128,9 @@ records impacts tagged with the id:
 | --- | --- |
 | `Step { at, delta }` | Level changes by `delta` at `at` and stays changed. Consumption is a negative delta, production a positive one. |
 | `Claim { start, end, amount }` | `amount > 0` units are unavailable during `[start, end)`. |
-| `Rate { start, end, per_tick }` (M2) | Level changes by `per_tick` every tick during `[start, end)`. |
-| `Require { start, end, value }` (M4, state timelines) | The state must equal `value` during `[start, end)`. |
-| `Set { at, value }` (M4, state timelines) | The state becomes `value` at `at`. |
+| `Rate { start, end, per_tick }` | Level changes by `per_tick` every tick during `[start, end)`. |
+| `StateImpact::Require { start, end, value }` (state timelines) | The state must equal `value` during `[start, end)`. |
+| `StateImpact::Set { at, value }` (state timelines) | The state becomes `value` at `at`. |
 
 An activity may have several impacts on several timelines. Multi-timeline
 plans are a set of timelines, one per resource; a plan-level check runs each
@@ -138,12 +151,31 @@ Validation on insertion:
 | --- | --- | --- |
 | Range bounds | 1 | `min <= level(t) <= max` for every tick from the start. Covers capacity (upper) and reserve (lower). |
 | Claim capacity | 1 | Range bound with `min = 0` on a claimable timeline. |
-| Window containment | 3 | An impact must lie inside one of a set of allowed windows (comm passes, daylight). Modelled as a claimable resource whose capacity is `0` outside windows and `1` inside, built from a window list. |
-| End-state level | 3 | The level at a given tick must be at least `x` (for example battery charge at the end of a sol). |
-| State requirements | 4 | `Require` intervals must see the required state value throughout. |
+| Window containment | 3, 4 | An activity must lie inside an allowed window (comm passes, daylight). Implemented as a state timeline whose value a ground activity sets at each window start and end, plus a `Require` of the activity. |
+| End-state level | 3 | *Not implemented.* The level at a given tick must be at least `x` (for example battery charge at the end of a sol). |
+| State requirements | 4 | `Require` intervals must see the required state value throughout; sets of different values at one tick are a conflict. |
 
 The check stops at the first violation in time order. Ties at the same tick
 cannot happen per timeline because the level at a tick is a single value.
+
+## Flexible starts (implemented as envelopes)
+
+Implemented in `envelope`: each flexible activity has fixed-duration impacts
+relative to its start and a start window `[earliest, latest]` (from the STN).
+With the windows treated as independent, the extreme level at tick `t` is
+the fixed level plus, for each activity, the extreme of its own summed
+profile over the relative times `[t - latest, t - earliest]`. That is the
+exact tightest envelope for independent windows; precedence constraints
+only remove schedules, so it is sound but may be loose for them. The
+verdict is three-valued: `Safe`, `Possible` (some schedule may break a bound
+at the reported tick) and `Certain` (every schedule breaks it there).
+Evaluation ticks are every shape change and the tick before; without rates
+the envelopes are constant in between and the reported tick is the
+earliest; with rates the upper envelope is convex and the lower concave
+between them, so `Safe` remains exact while the reported tick may be later.
+
+Not implemented: precedence-aware (max-flow) envelopes, and envelopes over
+state timelines.
 
 ## Uncertain durations
 
@@ -252,18 +284,32 @@ a small common crate only then, per the ecosystem rule for `search-core`.
    resources, step and claim impacts, `[min, max]` check, first violation
    with contributors, impact budget, checked arithmetic, property tests
    against a tick-by-tick oracle.
-2. **Piecewise-linear timelines**: rate impacts, level queries at any tick,
-   profile extraction for display and telemetry.
-3. **Plans and windows**: a set of timelines checked together, window
-   containment, end-state level checks.
-4. **State timelines**: discrete state values, `Set`/`Require` impacts.
-5. **Uncertain durations**: interval impacts, worst-case envelopes,
-   three-valued results.
-6. **Incremental checks and fixed-capacity storage**: add and remove
-   impacts with cheap re-checks for the onboard dispatcher; an
-   allocation-free variant with const-generic capacity.
+2. **Piecewise-linear timelines** (done, except profile extraction for
+   display and telemetry): rate impacts, exact crossing ticks, level
+   queries at any tick.
+3. **Plans and windows** (done, except end-state level checks): a set of
+   timelines checked together, atomic placement, earliest-feasible-start
+   search, a greedy priority scheduler, window containment via state
+   timelines.
+4. **State timelines** (done): discrete state values, `Set`/`Require`
+   impacts, mismatch and conflict explanations.
+5. **Uncertain durations** (partly done): envelopes for flexible starts with
+   fixed durations, three-valued results. Interval impacts with uncertain
+   end ticks are not implemented; split such an activity into a start part
+   and an end part with their own windows.
+6. **Incremental checks and fixed-capacity storage** (incremental part
+   done): add and remove on a sorted change-point profile, `O(n)`
+   re-checks. The allocation-free variant with const-generic capacity is
+   not implemented.
 
 ## Open questions
+
+- Should the earliest-start search with rates restrict candidates per
+  linear piece (solving the affine conditions) instead of checking every
+  tick of the window? Today the window length and `max_checks` bound it.
+- Should `fits` mean "no new violation" rather than "no violation at all"
+  on the touched timelines? Today an already violated timeline admits
+  nothing.
 
 - Should claimable resources also support fractional claims of a shared
   pool (for example power channels), or is that simply a depletable

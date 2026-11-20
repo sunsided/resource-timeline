@@ -2,21 +2,38 @@
 //!
 //! Resource timelines for onboard scheduling: energy, memory, thermal and communication budgets.
 //!
-//! A [`Timeline`] tracks the level of one resource over integer time ticks. Activities add
-//! [`Impact`]s to it: a depletable resource (battery energy, data volume) changes by permanent
-//! steps, a claimable resource (an instrument, a transmitter) is borrowed for a half-open
-//! interval and returned afterwards. [`Timeline::first_violation`] then reports the first tick at
-//! which the level leaves its `[min, max]` [`Bounds`], with the activities responsible.
+//! A [`Timeline`] tracks the level of one numeric resource over integer time ticks. Activities
+//! add [`Impact`]s to it:
+//!
+//! - a consumable resource (battery energy, data volume) changes by permanent
+//!   [`Impact::Step`]s and by linear [`Impact::Rate`]s (charging, discharging, thermal drift);
+//! - a reusable resource (an instrument, a transmitter, a power channel) is borrowed by an
+//!   [`Impact::Claim`] for a half-open interval and returned afterwards.
+//!
+//! [`Timeline::first_violation`] reports the first tick at which the level leaves its
+//! `[min, max]` [`Bounds`], with the activities responsible. A [`StateTimeline`] does the same
+//! for discrete states such as instrument modes and comm visibility windows.
+//!
+//! On top of single timelines:
+//!
+//! - a [`Plan`] holds one timeline per resource, places activities given as [`Demand`]s
+//!   atomically and finds the [earliest start](Plan::earliest_start) at which an activity fits;
+//! - [`greedy::schedule`] places activities in priority order at their earliest feasible start;
+//! - [`envelope::Envelope`] bounds the level over every schedule that start [`Window`]s admit,
+//!   so a flexible schedule can be checked once instead of per dispatch decision.
 //!
 //! This crate is the companion of `temporal-control` but does not depend on it: temporal
 //! controllability does not imply resource safety, so both checks must run independently. Both
-//! crates share the time representation only by convention: a [`Tick`] is a plain `i64`.
+//! crates share the time representation only by convention: a [`Tick`] is a plain `i64`, and
+//! start windows come from the STN (see [`envelope`] for the bridge).
 //!
 //! ```mermaid
 //! graph LR
-//!     impacts["Impacts tagged with ActivityId"] --> timeline["Timeline: start, initial level, bounds"]
-//!     timeline --> sweep["Sorted sweep over change ticks"]
-//!     sweep --> result["None, or first Violation with contributors"]
+//!     demands["Demands of an activity"] --> plan["Plan: numeric and state timelines"]
+//!     plan --> search["earliest_start, greedy::schedule"]
+//!     plan --> check["first_violation with contributors"]
+//!     windows["Start windows from an STN"] --> envelope["Envelope: Safe, Possible, Certain"]
+//!     plan --> envelope
 //! ```
 //!
 //! ## Example
@@ -41,8 +58,8 @@
 //!
 //! ## Status
 //!
-//! Pre-release, milestone 1 of `docs/design.md`: piecewise-constant timelines for depletable and
-//! claimable resources. The API will change.
+//! Pre-release. Milestones 1 to 5 of `docs/design.md` are implemented, plus incremental updates
+//! from milestone 6; the fixed-capacity storage is not. The API will change.
 //!
 //! Repository: <https://github.com/sunsided/resource-timeline>
 
