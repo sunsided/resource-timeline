@@ -12,10 +12,10 @@ use crate::{oracle, state};
 const PROBE: ActivityId = ActivityId(99);
 
 /// The handles of the battery, channel and state timelines of [`empty_plan`].
-type Handles = (TimelineId, TimelineId, StateId);
+pub type Handles = (TimelineId, TimelineId, StateId);
 
 /// A plan with a battery (`[0, 12]`, starting at 8), a capacity-2 channel and a 3-valued state.
-fn empty_plan() -> (Plan, Handles) {
+pub fn empty_plan() -> (Plan, Handles) {
     let mut plan = Plan::new();
     let bounds = Bounds::new(0, 12).expect("valid");
     let battery = plan
@@ -36,7 +36,7 @@ fn handles() -> Handles {
 }
 
 /// A random demand on one of the three timelines of [`empty_plan`], relative to the start.
-fn demand(rates: bool) -> impl Strategy<Value = Demand> {
+pub fn demand(rates: bool) -> impl Strategy<Value = Demand> {
     let step = (0_i64..8, -4_i64..=4).prop_map(|(at, delta)| Impact::Step { at, delta });
     let claim = (0_i64..8, 1_i64..6, 1_i64..=2).prop_map(|(start, length, amount)| Impact::Claim {
         start,

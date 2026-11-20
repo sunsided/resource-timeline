@@ -53,6 +53,7 @@ extern crate alloc;
 
 mod activity;
 mod error;
+pub mod greedy;
 mod impact;
 mod plan;
 mod state;
