@@ -83,5 +83,9 @@ name = "rover"
 required-features = ["alloc"]
 
 [[example]]
+name = "colony"
+required-features = ["alloc"]
+
+[[example]]
 name = "stn_bridge"
 required-features = ["alloc"]

@@ -31,7 +31,8 @@ timeline also comes in a fixed-capacity, allocation-free variant for onboard use
 - Game AI and simulation developers whose agents spend stamina, ammunition, storage or build
   capacity over game ticks, as in colony, strategy and survival games. Earliest-start search
   answers when an agent can afford an action, interval claims model shared workstations and
-  cooldowns, and the allocation-free variants keep checks off the heap inside a frame.
+  cooldowns, and the allocation-free variants keep checks off the heap inside a frame. See
+  [`examples/colony.rs`](https://github.com/sunsided/resource-timeline/blob/main/examples/colony.rs).
 - For the timing side of the same schedule (whether its temporal constraints can be met under
   uncertain durations, and executing it), use
   [temporal-control](https://github.com/sunsided/temporal-control). The two crates share only a
