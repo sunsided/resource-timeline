@@ -119,6 +119,22 @@ fn window(
     Window::new(lo, hi)
 }
 
+/// The warm-up draws 1.2 W from its start to its (uncertain) end.
+const WARM_DRAW: [Uncertain; 1] = [draw(-12)];
+/// The analysis draws 0.6 W from its start to its end.
+const ANALYZE_DRAW: [Uncertain; 1] = [draw(-6)];
+/// The transmission draws 2 W from its start to its end.
+const TRANSMIT_DRAW: [Uncertain; 1] = [draw(-20)];
+
+/// A constant draw of `per_tick` from the start of an activity to its end.
+const fn draw(per_tick: i64) -> Uncertain {
+    Uncertain::Rate {
+        start: Anchor::Start(0),
+        end: Anchor::End(0),
+        per_tick,
+    }
+}
+
 /// Checks the battery and the transmitter over every schedule the dispatcher still admits.
 fn report(
     when: &str,
@@ -126,21 +142,30 @@ fn report(
     points: &Points,
 ) -> Result<(), Box<dyn std::error::Error>> {
     debug_assert!(dispatcher.time(points.origin).is_some());
-    let warm_window = window(dispatcher, points.warm)?;
-    // Once the warm-up has ended, its duration is known.
-    let warm_duration = match (
-        dispatcher.time(points.warm),
-        dispatcher.time(points.warm_end),
-    ) {
-        (Some(start), Some(end)) => Window::at(end.0 - start.0),
-        _ => Window::new(WARM_UP.1, WARM_UP.2)?,
-    };
-    let analyze_duration = match dispatcher.time(points.analyze_end) {
-        Some(_) => return Ok(()),
-        None => Window::new(ANALYZE.1, ANALYZE.2)?,
-    };
+    if dispatcher.time(points.analyze_end).is_some() {
+        return Ok(());
+    }
 
-    // Battery in tenths of a watt-hour: 450 at minute 0, reserve 100, solar input 1 per minute.
+    let battery = battery()?;
+    let contingent = contingents(dispatcher, points)?;
+    let order = [
+        Precedence::after_end(WARM_UP.0, ANALYZE.0, 0),
+        Precedence::after_end(ANALYZE.0, TRANSMIT.0, 0),
+    ];
+    let envelope = Envelope::new(&battery, &[])?
+        .with_contingent(&contingent)?
+        .with_precedences(&order)?;
+
+    println!("{when}:");
+    print_windows(&envelope)?;
+    print_verdict(&envelope)?;
+    println!("  lowest possible battery level: {}", lowest(&envelope)?);
+    Ok(())
+}
+
+/// The battery in tenths of a watt-hour: 450 at minute 0, reserve 100, solar input 1 per
+/// minute over the horizon.
+fn battery() -> Result<Timeline, resource_timeline::Error> {
     let mut battery = Timeline::depletable(0, 450, Bounds::new(100, 1_000)?, 16)?;
     battery.add(
         ActivityId(0),
@@ -150,50 +175,47 @@ fn report(
             per_tick: 1,
         },
     )?;
-    let warm_draw = [Uncertain::Rate {
-        start: Anchor::Start(0),
-        end: Anchor::End(0),
-        per_tick: -12,
-    }];
-    let analyze_draw = [Uncertain::Rate {
-        start: Anchor::Start(0),
-        end: Anchor::End(0),
-        per_tick: -6,
-    }];
-    let transmit_draw = [Uncertain::Rate {
-        start: Anchor::Start(0),
-        end: Anchor::End(0),
-        per_tick: -20,
-    }];
-    let contingent = [
+    Ok(battery)
+}
+
+/// The three activities with the dispatcher's current start windows and the durations nature
+/// may still choose; the warm-up duration is known once it has ended.
+fn contingents(
+    dispatcher: &Dispatcher<8, 64>,
+    points: &Points,
+) -> Result<[Contingent<'static>; 3], resource_timeline::Error> {
+    let warm_duration = match (
+        dispatcher.time(points.warm),
+        dispatcher.time(points.warm_end),
+    ) {
+        (Some(start), Some(end)) => Window::at(end.0 - start.0),
+        _ => Window::new(WARM_UP.1, WARM_UP.2)?,
+    };
+
+    Ok([
         Contingent {
             activity: WARM_UP.0,
-            window: warm_window,
+            window: window(dispatcher, points.warm)?,
             duration: warm_duration,
-            impacts: &warm_draw,
+            impacts: &WARM_DRAW,
         },
         Contingent {
             activity: ANALYZE.0,
             window: window(dispatcher, points.analyze)?,
-            duration: analyze_duration,
-            impacts: &analyze_draw,
+            duration: Window::new(ANALYZE.1, ANALYZE.2)?,
+            impacts: &ANALYZE_DRAW,
         },
         Contingent {
             activity: TRANSMIT.0,
             window: window(dispatcher, points.transmit)?,
             duration: Window::at(TRANSMIT.1),
-            impacts: &transmit_draw,
+            impacts: &TRANSMIT_DRAW,
         },
-    ];
-    let order = [
-        Precedence::after_end(WARM_UP.0, ANALYZE.0, 0),
-        Precedence::after_end(ANALYZE.0, TRANSMIT.0, 0),
-    ];
+    ])
+}
 
-    let envelope = Envelope::new(&battery, &[])?
-        .with_contingent(&contingent)?
-        .with_precedences(&order)?;
-    println!("{when}:");
+/// Prints the start window of each activity, tightened by the precedences.
+fn print_windows(envelope: &Envelope<'_>) -> Result<(), &'static str> {
     for (name, activity) in [
         ("warm-up", WARM_UP.0),
         ("analysis", ANALYZE.0),
@@ -207,6 +229,11 @@ fn report(
         );
     }
 
+    Ok(())
+}
+
+/// Prints whether the battery is safe, possibly or certainly violated.
+fn print_verdict(envelope: &Envelope<'_>) -> Result<(), resource_timeline::Error> {
     match envelope.check()? {
         Verdict::Safe => println!("  battery: safe for every remaining schedule and duration"),
         Verdict::Possible(violation) => println!(
@@ -219,12 +246,13 @@ fn report(
         ),
     }
 
-    let lowest = (0..=HORIZON)
-        .map(|t| envelope.lower_at(t))
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .min()
-        .unwrap_or_default();
-    println!("  lowest possible battery level: {lowest}");
     Ok(())
+}
+
+/// The lowest level the battery may reach over the horizon.
+fn lowest(envelope: &Envelope<'_>) -> Result<i64, resource_timeline::Error> {
+    let levels = (0..=HORIZON)
+        .map(|t| envelope.lower_at(t))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(levels.into_iter().min().unwrap_or_default())
 }
