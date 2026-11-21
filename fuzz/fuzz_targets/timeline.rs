@@ -10,7 +10,8 @@
 //! - a reported first violation names a level that `level_at` confirms and that really breaks
 //!   the named bound, and both copies report the same one;
 //! - the incrementally edited timeline reports the same first violation as one rebuilt from
-//!   its remaining impacts and targets.
+//!   its remaining impacts and targets;
+//! - an exported profile answers `level_at` exactly like the timeline.
 
 #![no_main]
 
@@ -132,6 +133,7 @@ fuzz_target!(|input: Input| {
     }
 
     check_levels(&heap);
+    check_export(&heap);
     let violation = checked_violation(&heap);
     if let Some(copy) = &fixed {
         assert_eq!(plain(&checked_violation(copy)), plain(&violation));
@@ -236,6 +238,21 @@ fn check_levels<S: Storage>(timeline: &Timeline<S>) {
             (Err(Error::Overflow), None) => {}
             (got, expected) => panic!("level at {t}: got {got:?}, oracle {expected:?}"),
         }
+    }
+}
+
+/// Checks that the exported profile reports the timeline's level at every probe tick.
+fn check_export<S: Storage>(timeline: &Timeline<S>) {
+    let Ok(profile) = timeline.export() else {
+        return;
+    };
+
+    for t in probes(timeline) {
+        assert_eq!(
+            profile.level_at(t),
+            timeline.level_at(t),
+            "profile level at {t}"
+        );
     }
 }
 

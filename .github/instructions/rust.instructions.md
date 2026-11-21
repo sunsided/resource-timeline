@@ -33,8 +33,10 @@ applyTo: "**/*.rs"
   a change to one path is tested against the other (`tests/it/fixed.rs`).
 - Every check has a brute-force oracle in `tests/it/oracle.rs` (and the state and envelope
   tests) that shares no logic with the implementation; a new check joins those property
-  tests in the same PR. The `decode` and `timeline` fuzz targets cover the codec and
-  timeline edits with extreme values.
+  tests in the same PR. Fuzz targets cover the same ground with extreme values: `decode`
+  (codec), `serde` (deserialization), `timeline` (edits, levels, export), `plan` (placement,
+  `fits`, `earliest_start`) and `envelope` (soundness for a concrete schedule). A new entry
+  point that parses input or does tick or level arithmetic joins one of them.
 - Public API changes go with a matching update to the README scope list and
   `docs/design.md`. Name every public API change in the PR.
 - Mermaid diagrams in doc comments must match the code they describe. Update them when the

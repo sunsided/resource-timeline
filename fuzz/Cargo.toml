@@ -10,7 +10,9 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
-resource-timeline = { path = ".." }
+resource-timeline = { path = "..", features = ["serde"] }
+serde = "1.0.228"
+serde_json = "1.0.149"
 
 # Standalone: not a member of any workspace.
 [workspace]
@@ -44,6 +46,27 @@ bench = false
 [[bin]]
 name = "timeline"
 path = "fuzz_targets/timeline.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "plan"
+path = "fuzz_targets/plan.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "envelope"
+path = "fuzz_targets/envelope.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "serde"
+path = "fuzz_targets/serde.rs"
 test = false
 doc = false
 bench = false
