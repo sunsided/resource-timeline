@@ -170,6 +170,75 @@ proptest! {
     }
 }
 
+/// A demand that may be invalid: a valid [`demand`], a step on the claimable channel (kind
+/// mismatch), an empty interval or a non-positive claim amount.
+fn wild_demand() -> impl Strategy<Value = Demand> {
+    let mismatched = (0_i64..8, -4_i64..=4).prop_map(|(at, delta)| Demand::Level {
+        timeline: handles().1,
+        impact: Impact::Step { at, delta },
+    });
+    let empty = (0_i64..8, -2_i64..=0).prop_map(|(start, length)| Demand::Level {
+        timeline: handles().0,
+        impact: Impact::Rate {
+            start,
+            end: start + length,
+            per_tick: 1,
+        },
+    });
+    let free = (0_i64..8, -2_i64..=0).prop_map(|(start, amount)| Demand::Level {
+        timeline: handles().1,
+        impact: Impact::Claim {
+            start,
+            end: start + 1,
+            amount,
+        },
+    });
+    prop_oneof![6 => demand(true), 1 => mismatched, 1 => empty, 1 => free]
+}
+
+/// A placement start: mostly near the timelines, sometimes before their start, and sometimes
+/// so late that shifting a demand overflows.
+fn wild_start() -> impl Strategy<Value = Tick> {
+    prop_oneof![4 => -4_i64..30, 1 => (i64::MAX - 8)..=i64::MAX]
+}
+
+/// The impacts of a plan's numeric timelines and of its state timelines.
+type AllImpacts = (Vec<(ActivityId, Impact)>, Vec<(ActivityId, StateImpact)>);
+
+/// Every impact of every timeline in `plan`, numeric then state, in storage order.
+fn all_impacts(plan: &Plan) -> AllImpacts {
+    let levels = plan
+        .timelines()
+        .iter()
+        .flat_map(|timeline| timeline.impacts().iter().copied())
+        .collect();
+    let states = plan
+        .states()
+        .iter()
+        .flat_map(|timeline| timeline.impacts().iter().copied())
+        .collect();
+    (levels, states)
+}
+
+proptest! {
+    /// `place` is all or nothing: a rejected placement leaves the plan unchanged, an accepted
+    /// one adds exactly one impact per demand, and removing the activity takes them out again.
+    #[test]
+    fn place_is_all_or_nothing(plan in plan(true), demands in prop::collection::vec(wild_demand(), 1..4), start in wild_start()) {
+        let before = plan.clone();
+        let mut placed = plan;
+        if placed.place(PROBE, start, &demands).is_err() {
+            prop_assert_eq!(&placed, &before);
+        } else {
+            let (levels, states) = all_impacts(&placed);
+            let (old_levels, old_states) = all_impacts(&before);
+            prop_assert_eq!(levels.len() + states.len(), old_levels.len() + old_states.len() + demands.len());
+            prop_assert_eq!(placed.remove(PROBE), demands.len());
+            prop_assert_eq!(all_impacts(&placed), all_impacts(&before));
+        }
+    }
+}
+
 /// A failed placement leaves the plan unchanged, even when earlier demands were valid.
 #[test]
 fn place_is_atomic() {
