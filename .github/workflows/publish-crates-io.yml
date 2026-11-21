@@ -1,8 +1,6 @@
 # Publishes resource-timeline when release-plz pushes its vX.Y.Z tag.
 # Runs in the `crates-io` environment, which only allows v*.*.* tags.
 # crates.io trusted publishing is bound to this file name and environment: do not rename either.
-# Cargo jobs check out into resource-timeline/ with the unreleased sibling temporal-control next to
-# it, as in ci.yml (.github/actions/checkout-siblings).
 # Actions are pinned to commit SHAs (tag in the comment); Dependabot updates them.
 name: Publish
 
@@ -21,17 +19,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    defaults:
-      run:
-        working-directory: resource-timeline
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          path: resource-timeline
           persist-credentials: false
-      - uses: ./resource-timeline/.github/actions/checkout-siblings
-        with:
-          token: ${{ secrets.SIBLING_REPOS_TOKEN }}
       - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: stable
@@ -53,17 +44,10 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    defaults:
-      run:
-        working-directory: resource-timeline
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          path: resource-timeline
           persist-credentials: false
-      - uses: ./resource-timeline/.github/actions/checkout-siblings
-        with:
-          token: ${{ secrets.SIBLING_REPOS_TOKEN }}
       - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: stable

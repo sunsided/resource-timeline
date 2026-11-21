@@ -3,8 +3,6 @@
 # ("Cargo: Bump ...") instead of Conventional Commits prefixes (no "deps:", "chore:").
 # cooldown follows zizmor's dependabot-cooldown recommendation (7 days); raise it if the repo's
 # zizmor config demands more. Add docker / npm blocks with the same settings if the repo grows them.
-# Cargo updates fail while the path dev-dependency temporal-control is unreleased: Dependabot
-# cannot reach `../temporal-control`. They resume once it depends on a crates.io release.
 version: 2
 updates:
   - package-ecosystem: cargo
@@ -22,8 +20,7 @@ updates:
         update-types: [minor, patch]
 
   - package-ecosystem: github-actions
-    # "/" covers the workflows; the local composite action needs its own entry.
-    directories: ["/", "/.github/actions/checkout-siblings"]
+    directory: /
     schedule:
       interval: weekly
     cooldown:

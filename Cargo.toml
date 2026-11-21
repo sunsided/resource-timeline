@@ -61,8 +61,8 @@ private_intra_doc_links = "allow"
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 proptest = "1.11.0"
 serde_json = "1.0.149"
-# Only for the bridge example; path-only dev-dependencies are dropped on publish.
-temporal-control = { path = "../temporal-control" }
+# Only for the bridge example.
+temporal-control = "0.1"
 
 [[bench]]
 name = "timeline"

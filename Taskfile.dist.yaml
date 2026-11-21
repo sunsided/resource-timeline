@@ -78,14 +78,13 @@ tasks:
   fmt:
     desc: Format all Rust sources
     cmds:
-      # No --all: it follows path dependencies into the temporal-control checkout next door.
-      - cargo fmt
+      - cargo fmt --all
       - task: fuzz:fmt
 
   fmt:check:
     desc: Check formatting without modifying files
     cmds:
-      - cargo fmt --check
+      - cargo fmt --all --check
 
   lint:
     desc: Run all linters
