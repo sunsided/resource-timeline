@@ -1,8 +1,8 @@
 //! A rover sol, scheduled greedily against energy, memory, transmitter and state timelines.
 //!
-//! One tick is one minute. The activities follow the example in the spaceflight track: warm up
-//! the spectrometer, analyze a rock with the warm instrument, transmit the results inside a
-//! comm pass. Solar charging runs all sol. The order between analysis and transmission is not
+//! One tick is one minute. The rover warms up the spectrometer, analyzes a rock with the warm
+//! instrument and transmits the results inside a comm pass. Solar charging runs all sol (one
+//! Mars day). The order between analysis and transmission is not
 //! stated anywhere; it follows from the memory timeline, because transmitting frees memory that
 //! only the analysis fills.
 //!
