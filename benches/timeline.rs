@@ -2,7 +2,7 @@
 
 use std::hint::black_box;
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::Criterion;
 use resource_timeline::envelope::{Envelope, Flexible, Precedence};
 use resource_timeline::storage::Fixed;
 use resource_timeline::{ActivityId, Bounds, Demand, Impact, Plan, Timeline, Window};
@@ -163,13 +163,15 @@ fn bench_envelope_precedences(c: &mut Criterion) {
     });
 }
 
-criterion_group!(
-    benches,
-    bench_envelope_precedences,
-    bench_first_violation,
-    bench_first_violation_fixed,
-    bench_earliest_start,
-    bench_earliest_start_rates,
-    bench_export
-);
-criterion_main!(benches);
+/// Runs every benchmark in this file with criterion's command-line flags.
+fn main() {
+    let mut criterion = Criterion::default().configure_from_args();
+
+    bench_envelope_precedences(&mut criterion);
+    bench_first_violation(&mut criterion);
+    bench_first_violation_fixed(&mut criterion);
+    bench_earliest_start(&mut criterion);
+    bench_earliest_start_rates(&mut criterion);
+    bench_export(&mut criterion);
+    criterion.final_summary();
+}
