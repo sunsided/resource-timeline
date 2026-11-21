@@ -301,3 +301,30 @@ jobs:
       - run: cargo build --lib --target thumbv7em-none-eabihf --no-default-features --features serde
       - run: cargo build --lib --target thumbv7em-none-eabihf --all-features
 
+  fuzz:
+    name: fuzz targets build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: resource-timeline/fuzz
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: resource-timeline
+          persist-credentials: false
+      - uses: ./resource-timeline/.github/actions/checkout-siblings
+        with:
+          token: ${{ secrets.SIBLING_REPOS_TOKEN }}
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: nightly
+          components: rustfmt, clippy
+      - uses: taiki-e/install-action@25f51f6b1bf4e18876107cece836f4f77ac17c8c # v2.90.7
+        with:
+          tool: cargo-fuzz
+      # install-action ships a musl cargo-fuzz, which would default to the musl target
+      # (no sanitizer support); build for the runner's gnu host instead.
+      - run: cargo +nightly fuzz build --target x86_64-unknown-linux-gnu
+      - run: cargo fmt --check && cargo +nightly clippy --all-targets -- -D warnings
