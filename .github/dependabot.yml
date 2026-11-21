@@ -1,0 +1,37 @@
+# One block per ecosystem; within each, majors and minor/patch updates are separate groups, so a
+# breaking upgrade never hides inside a routine bump. Commit subjects get an ecosystem prefix
+# ("Cargo: Bump ...") instead of Conventional Commits prefixes (no "deps:", "chore:").
+# cooldown follows zizmor's dependabot-cooldown recommendation (7 days); raise it if the repo's
+# zizmor config demands more. Add docker / npm blocks with the same settings if the repo grows them.
+# Cargo updates fail while the path dev-dependency temporal-control is unreleased: Dependabot
+# cannot reach `../temporal-control`. They resume once it depends on a crates.io release.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: Cargo
+    groups:
+      cargo-major:
+        update-types: [major]
+      cargo-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    # "/" covers the workflows; the local composite action needs its own entry.
+    directories: ["/", "/.github/actions/checkout-siblings"]
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: Actions
+    groups:
+      actions-major:
+        update-types: [major]
+      actions-minor-patch:
+        update-types: [minor, patch]
