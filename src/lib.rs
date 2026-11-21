@@ -133,6 +133,11 @@ pub use timeline::{Bounds, Kind, Timeline};
 pub use violation::{Bound, Violation};
 pub use window::Window;
 
+/// Doctests for the code examples in README.md (not part of the API).
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+mod readme_doctests {}
+
 /// A point in time, as a count of integer ticks.
 ///
 /// The unit (seconds, milliseconds, spacecraft clock subticks) and the epoch are chosen by the

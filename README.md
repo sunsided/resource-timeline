@@ -1,5 +1,13 @@
 # resource-timeline
 
+[![crates.io](https://img.shields.io/crates/v/resource-timeline.svg)](https://crates.io/crates/resource-timeline)
+[![docs.rs](https://img.shields.io/docsrs/resource-timeline)](https://docs.rs/resource-timeline)
+[![CI](https://github.com/sunsided/resource-timeline/actions/workflows/ci.yml/badge.svg)](https://github.com/sunsided/resource-timeline/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/sunsided/resource-timeline/graph/badge.svg)](https://codecov.io/gh/sunsided/resource-timeline)
+[![MSRV](https://img.shields.io/crates/msrv/resource-timeline)](https://crates.io/crates/resource-timeline)
+[![License](https://img.shields.io/crates/l/resource-timeline)](https://github.com/sunsided/resource-timeline#license)
+[![unsafe forbidden](https://img.shields.io/badge/unsafe-forbidden-success.svg)](https://github.com/rust-secure-code/safety-dance/)
+
 Resource timelines for onboard scheduling: energy, memory, thermal and communication budgets.
 
 ## Scope
@@ -19,7 +27,7 @@ Resource timelines for onboard scheduling: energy, memory, thermal and communica
 - Fixed-capacity, allocation-free variants of every timeline and of the plan (`Fixed<N>`,
   `FixedPlan<T, S, N>`), sharing all logic with the heap variant, with typed capacity errors;
   the `alloc` feature (default) adds heap storage, envelopes and the greedy scheduler
-- A greedy priority scheduler (example and test vehicle), see `examples/rover.rs`
+- A greedy priority scheduler (example and test vehicle), see [`examples/rover.rs`](https://github.com/sunsided/resource-timeline/blob/main/examples/rover.rs)
 - Level envelopes for activities with start windows: safe, possibly violated or certainly
   violated for every schedule the windows admit, with uncertain durations (claims and rates
   anchored at the activity end), precedence constraints (window propagation plus an exact
@@ -30,20 +38,77 @@ Resource timelines for onboard scheduling: energy, memory, thermal and communica
   allocation, and optional `serde` support (feature `serde`)
 - Borrowed search scratch for small onboard stacks (`SearchScratch`)
 - A bridge example that checks a schedule with the windows of `temporal-control`'s dispatcher,
-  see `examples/stn_bridge.rs`
+  see [`examples/stn_bridge.rs`](https://github.com/sunsided/resource-timeline/blob/main/examples/stn_bridge.rs)
 - Brute-force oracles for every check, compared in property tests
 - Companion to temporal-control, without a dependency on it
 
 ## Status
 
-Pre-release. Milestones 1 to 6 of [docs/design.md](docs/design.md) are implemented. The API
-will change.
+Pre-release (0.0.0). Milestones 1 to 6 of [docs/design.md](https://github.com/sunsided/resource-timeline/blob/main/docs/design.md) are
+implemented. The API will change.
+
+## Installation
+
+```sh
+cargo add resource-timeline
+```
+
+For a target without a heap, keep only the fixed-capacity timelines, plans and the codec:
+
+```toml
+[dependencies]
+resource-timeline = { version = "0.0.0", default-features = false }
+```
+
+## Usage
+
+```rust
+use resource_timeline::{ActivityId, Bound, Bounds, Impact, Timeline};
+
+// Battery with 100 units, a reserve of 20 and a capacity of 120, room for 16 impacts.
+let mut battery = Timeline::depletable(0, 100, Bounds::new(20, 120)?, 16)?;
+battery.add(ActivityId(1), Impact::Step { at: 5, delta: -40 })?;
+battery.add(ActivityId(2), Impact::Rate { start: 10, end: 20, per_tick: -5 })?;
+
+// The reserve breaks at tick 19, when the level drops to 15.
+let violation = battery.first_violation()?.expect("the reserve is broken");
+assert_eq!((violation.at, violation.level), (19, 15));
+assert_eq!(violation.bound, Bound::BelowMin(20));
+# Ok::<(), resource_timeline::Error>(())
+```
+
+## Features
+
+| Feature | Default | Enables |
+| --- | --- | --- |
+| `alloc` | yes | Heap storage (the default storage of every type), level and state envelopes, and the greedy scheduler |
+| `serde` | no | `Serialize` and `Deserialize` for the plain data types, timelines and profiles (deserializing timelines and profiles also needs `alloc`) |
+
+Without `alloc`, the crate needs no allocator: timelines, state timelines and plans use
+`storage::Fixed` and `storage::FixedPlan`, and it builds for bare-metal targets such as
+`thumbv7em-none-eabihf` (checked in CI).
+
+## MSRV
+
+The library builds on Rust 1.85 (`rust-version` in `Cargo.toml`, checked in CI). Tests,
+benches and examples may need a newer toolchain. Raising the MSRV is a minor-version change.
 
 ## License
 
 Licensed under either of
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT license ([LICENSE-MIT](LICENSE-MIT))
+- Apache License, Version 2.0 ([LICENSE-APACHE](https://github.com/sunsided/resource-timeline/blob/main/LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](https://github.com/sunsided/resource-timeline/blob/main/LICENSE-MIT))
 
-at your option.
+at your option. The code under
+[`examples/`](https://github.com/sunsided/resource-timeline/tree/main/examples) is public
+domain ([CC0-1.0](https://github.com/sunsided/resource-timeline/blob/main/LICENSES/CC0-1.0.txt)), so you can copy it freely.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion
+in this work by you, as defined in the Apache-2.0 license, shall be dual licensed as above,
+without any additional terms or conditions.
+
+## Contributing
+
+See [CONTRIBUTING.md](https://github.com/sunsided/resource-timeline/blob/main/CONTRIBUTING.md)
+for the setup, the Taskfile commands and the branch and commit conventions.

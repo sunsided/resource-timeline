@@ -10,6 +10,19 @@ repository = "https://github.com/sunsided/resource-timeline"
 readme = "README.md"
 keywords = ["scheduling", "resources", "spacecraft", "timeline", "planning"]
 categories = ["aerospace", "algorithms", "no-std"]
+# Repository tooling stays out of the published crate.
+exclude = [
+    ".github/",
+    "scripts/",
+    ".pre-commit-config.yaml",
+    "Taskfile.dist.yaml",
+    "_typos.toml",
+    "clippy.toml",
+    "codecov.yml",
+    "deny.toml",
+    "release-plz.toml",
+    "rustfmt.toml",
+]
 
 [features]
 default = ["alloc"]
