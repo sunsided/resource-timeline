@@ -1,9 +1,5 @@
 # resource-timeline: design
 
-Status: draft. Milestones 1 to 6 are implemented, including end-state
-level checks, profile extraction, uncertain durations, precedence-aware and
-state envelopes, and fixed-capacity storage.
-
 ## Purpose
 
 `resource-timeline` answers one question for an onboard scheduler: if these
@@ -58,8 +54,8 @@ starts at capacity, a claim lowers it for `[start, end)`, and the lower
 bound `0` is the "no double-booking" rule.
 
 Rate-based resources are depletable timelines with `Rate` impacts, which
-make the profile piecewise linear (milestone 2). State timelines are a
-separate type, `StateTimeline` (milestone 4), because their constraint is
+make the profile piecewise linear. State timelines are a
+separate type, `StateTimeline`, because their constraint is
 "the value equals X throughout an interval", not a numeric range.
 
 Thermal limits are modelled at this level only as budgets, for example a
@@ -80,7 +76,7 @@ thermal model belongs to `polyzonotope-reach`, not here.
 
 ## Timeline representation
 
-### Milestone 1: piecewise-constant (superseded by the change-point profile below)
+### Piecewise-constant (superseded by the change-point profile below)
 
 The level is a step function of time:
 
@@ -98,7 +94,7 @@ capacity-1 resource pass. Between events the level is constant, so
 comparing once per distinct event tick (plus the initial segment) checks
 every tick. Cost: `O(n log n)` time, `O(n)` memory for `n` impacts.
 
-### Milestone 2: piecewise-linear (implemented)
+### Piecewise-linear
 
 Implementation: the timeline keeps, next to its impact list, a sorted list
 of change points `(tick, level jump, slope change)`, one per tick, updated
@@ -135,7 +131,7 @@ records impacts tagged with the id:
 
 An activity may have several impacts on several timelines. Multi-timeline
 plans are a set of timelines, one per resource; a plan-level check runs each
-and reports the earliest violation (milestone 3).
+and reports the earliest violation.
 
 Validation on insertion:
 
@@ -148,13 +144,13 @@ Validation on insertion:
 
 ## Checks
 
-| Check | Milestone | Description |
-| --- | --- | --- |
-| Range bounds | 1 | `min <= level(t) <= max` for every tick from the start. Covers capacity (upper) and reserve (lower). |
-| Claim capacity | 1 | Range bound with `min = 0` on a claimable timeline. |
-| Window containment | 3, 4 | An activity must lie inside an allowed window (comm passes, daylight). Implemented as a state timeline whose value a ground activity sets at each window start and end, plus a `Require` of the activity. |
-| End-state level | 3 | `Target { at, min }`: the level at tick `at` must be at least `min` (for example battery charge at the end of a sol). Reported as `Bound::BelowTarget`; part of every check, search and envelope. At the same tick a broken bound wins, among targets the strictest. |
-| State requirements | 4 | `Require` intervals must see the required state value throughout; sets of different values at one tick are a conflict. |
+| Check | Description |
+| --- | --- |
+| Range bounds | `min <= level(t) <= max` for every tick from the start. Covers capacity (upper) and reserve (lower). |
+| Claim capacity | Range bound with `min = 0` on a claimable timeline. |
+| Window containment | An activity must lie inside an allowed window (comm passes, daylight). Implemented as a state timeline whose value a ground activity sets at each window start and end, plus a `Require` of the activity. |
+| End-state level | `Target { at, min }`: the level at tick `at` must be at least `min` (for example battery charge at the end of a sol). Reported as `Bound::BelowTarget`; part of every check, search and envelope. At the same tick a broken bound wins, among targets the strictest. |
+| State requirements | `Require` intervals must see the required state value throughout; sets of different values at one tick are a conflict. |
 
 The check stops at the first violation in time order. Ties at the same tick
 cannot happen per timeline because the level at a tick is a single value.
@@ -321,7 +317,7 @@ activity that consumes and later produces the same amount does not appear.
 A violation at the start tick with no contributors means the initial level
 is already out of bounds.
 
-Later milestones extend explanations with per-contributor amounts and a
+Not yet implemented: explanations with per-contributor amounts and a
 minimal subset ("removing any one of these activities resolves the
 violation") for the replanner.
 
@@ -338,7 +334,7 @@ The integrating layer (miniplan adapter, flight executive glue) reads a
 schedule or the dispatcher's current windows from `temporal-control`, turns
 each activity into impacts on the relevant timelines, and calls the check.
 With uncertain durations it passes the STNU contingent bounds as impact
-intervals (milestone 5).
+intervals.
 
 If both crates later need the same public type, the shared piece goes into
 a small common crate only then, per the ecosystem rule for `search-core`.
@@ -351,9 +347,9 @@ a small common crate only then, per the ecosystem rule for `search-core`.
   `From<i64>`/`Into<i64>` so integration code converts without loss.
 - `temporal-control`: expose contingent link bounds `[l, u]` and the
   current execution windows in a form that can be turned into impact
-  intervals (needed for milestone 5).
+  intervals (for uncertain durations).
 - `miniplan`: an optional adapter feature that maps PDDL numeric fluents or
-  durative-action effects onto timeline impacts. Not before milestone 3.
+  durative-action effects onto timeline impacts.
 - `polyzonotope-reach`: thermal and power physics, if needed, come from
   there as conservative bounds that this crate consumes as plain levels.
 
@@ -373,27 +369,27 @@ a small common crate only then, per the ecosystem rule for `search-core`.
   fuzzing of the impact list, and Kani or similar bounded proofs for the
   overflow handling.
 
-## Milestones
+## Implemented scope
 
-1. **Piecewise-constant timelines** (done): depletable and claimable
-   resources, step and claim impacts, `[min, max]` check, first violation
-   with contributors, impact budget, checked arithmetic, property tests
-   against a tick-by-tick oracle.
-2. **Piecewise-linear timelines** (done): rate impacts, exact crossing
-   ticks, level queries at any tick, profile extraction for display and
-   telemetry.
-3. **Plans and windows** (done): a set of timelines checked together,
-   atomic placement, earliest-feasible-start search (closed form per piece
-   with rates), a greedy priority scheduler, window containment via state
-   timelines, end-state level targets.
-4. **State timelines** (done): discrete state values, `Set`/`Require`
-   impacts, mismatch and conflict explanations.
-5. **Uncertain durations** (done): envelopes for flexible starts, for
-   contingent durations anchored at the activity end, with precedences, and
-   over state timelines; three-valued results.
-6. **Incremental checks and fixed-capacity storage** (done): add and remove
-   on a sorted change-point profile, `O(n)` re-checks, and the
-   allocation-free variant with const-generic capacity.
+- **Piecewise-constant timelines**: depletable and claimable
+  resources, step and claim impacts, `[min, max]` check, first violation
+  with contributors, impact budget, checked arithmetic, property tests
+  against a tick-by-tick oracle.
+- **Piecewise-linear timelines**: rate impacts, exact crossing
+  ticks, level queries at any tick, profile extraction for display and
+  telemetry.
+- **Plans and windows**: a set of timelines checked together,
+  atomic placement, earliest-feasible-start search (closed form per piece
+  with rates), a greedy priority scheduler, window containment via state
+  timelines, end-state level targets.
+- **State timelines**: discrete state values, `Set`/`Require`
+  impacts, mismatch and conflict explanations.
+- **Uncertain durations**: envelopes for flexible starts, for
+  contingent durations anchored at the activity end, with precedences, and
+  over state timelines; three-valued results.
+- **Incremental checks and fixed-capacity storage**: add and remove
+  on a sorted change-point profile, `O(n)` re-checks, and the
+  allocation-free variant with const-generic capacity.
 
 ## Open questions
 
@@ -406,7 +402,7 @@ a small common crate only then, per the ecosystem rule for `search-core`.
   last `O(N)` stack buffer?
 - Should claimable resources also support fractional claims of a shared
   pool (for example power channels), or is that simply a depletable
-  resource with paired steps? Milestone 1 treats both the same way.
+  resource with paired steps? Today both are treated the same way.
 - Do we need a timeline end tick (planning horizon) to bound checks of
   rate impacts that never end?
 - How much of the explanation (minimal conflict sets) belongs here

@@ -6,8 +6,7 @@ allocate. It has strict conventions; the formal semantics live in `docs/design.m
 `.github/instructions/*.instructions.md`.
 
 - Run checks through the Taskfile: `task ci` mirrors CI. `task lint`, `task test` and
-  `task doc` are the common entry points. Local builds need the `temporal-control`
-  repository checked out next to this one (path dev-dependency of the `stn_bridge` example).
+  `task doc` are the common entry points.
 - Every item gets a doc comment, private items included. No `mod.rs` files (use `foo.rs`
   plus `foo/`). No `// ----` separator comments (split the file into modules instead).
 - `clippy::pedantic` must stay clean. Suppress only with

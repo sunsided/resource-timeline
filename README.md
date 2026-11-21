@@ -10,6 +10,30 @@
 
 Resource timelines for onboard scheduling: energy, memory, thermal and communication budgets.
 
+The crate answers one question for a scheduler: if these activities run at these times, does
+any resource leave its safe range, and if so, when, by how much, and because of whom? A timeline
+tracks one resource over integer ticks (a battery that drains and charges at given rates, a
+data buffer, an instrument that can only be claimed once at a time, or a mode that has to hold
+during an observation), and the check reports the first violation with the activities
+responsible. On top of that come plans over several timelines, earliest-start search, and
+envelopes that check a flexible schedule once for every start the windows allow. Every
+timeline also comes in a fixed-capacity, allocation-free variant for onboard use.
+
+## Who this is for
+
+- Flight software and mission operations engineers who place activities on a spacecraft or
+  rover and need to know whether battery, memory, data volume, instruments or comm windows hold
+  up, onboard or on the ground before uplink.
+- Developers of onboard or embedded schedulers that need checked arithmetic, explicit budgets
+  and no heap.
+- Planners and replanners that want a violation explained (the tick, the level and the
+  activities involved) instead of a bare "infeasible".
+- For the timing side of the same schedule (whether its temporal constraints can be met under
+  uncertain durations, and executing it), use
+  [temporal-control](https://github.com/sunsided/temporal-control). The two crates share only a
+  convention (`i64` ticks, half-open intervals) and no dependency, because temporal
+  controllability does not imply resource safety and both checks have to run.
+
 ## Scope
 
 - Numeric timelines for consumable resources (energy, data volume) with step and rate
@@ -40,12 +64,9 @@ Resource timelines for onboard scheduling: energy, memory, thermal and communica
 - A bridge example that checks a schedule with the windows of `temporal-control`'s dispatcher,
   see [`examples/stn_bridge.rs`](https://github.com/sunsided/resource-timeline/blob/main/examples/stn_bridge.rs)
 - Brute-force oracles for every check, compared in property tests
-- Companion to temporal-control, without a dependency on it
 
-## Status
-
-Pre-release (0.0.0). Milestones 1 to 6 of [docs/design.md](https://github.com/sunsided/resource-timeline/blob/main/docs/design.md) are
-implemented. The API will change.
+See [docs/design.md](https://github.com/sunsided/resource-timeline/blob/main/docs/design.md) for
+the semantics of each check.
 
 ## Installation
 
@@ -57,7 +78,7 @@ For a target without a heap, keep only the fixed-capacity timelines, plans and t
 
 ```toml
 [dependencies]
-resource-timeline = { version = "0.0.0", default-features = false }
+resource-timeline = { version = "0.1", default-features = false }
 ```
 
 ## Usage

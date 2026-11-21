@@ -20,12 +20,7 @@ needs before it can be merged.
    - nightly Rust plus [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) for fuzzing;
    - the `thumbv7em-none-eabihf` target (`rustup target add thumbv7em-none-eabihf`) for the
      `no_std` build.
-4. Check out [temporal-control](https://github.com/sunsided/temporal-control) next to this
-   repository (`../temporal-control`). The `stn_bridge` example depends on it by path, and
-   it has no crates.io release yet, so Cargo needs the checkout for every build. CI checks it
-   out the same way. Inside the planning hub, the untracked `../.cargo/config.toml`
-   (`[patch.crates-io]`) points released sibling crates at their working trees as well.
-5. Install the git hooks with [prek](https://prek.j178.dev/) (`prek install`), or with
+4. Install the git hooks with [prek](https://prek.j178.dev/) (`prek install`), or with
    `pre-commit install`. Fast checks run on commit; clippy and tests run on push.
 
 ## Everyday commands
@@ -93,10 +88,6 @@ Releases are handled by [release-plz](https://release-plz.dev/). Every merge to
 GitHub Releases. The `vX.Y.Z` tag then triggers `publish-crates-io.yml`, which
 publishes the crate to crates.io via trusted publishing from the protected `crates-io`
 environment.
-
-Release automation is dormant until the release GitHub App is configured: the release-plz
-jobs run only when the repository variable `RELEASE_APP_CLIENT_ID` is set (with the secret
-`RELEASE_APP_PRIVATE_KEY`). Setting the variable activates releases.
 
 ## License
 

@@ -14,5 +14,5 @@ applyTo: "**/*.md,docs/**"
   `readme_doctests` module in `src/lib.rs`, so its `rust` blocks run as doctests and must
   compile. Use `rust,no_run` or `rust,ignore` only with a stated reason.
 - `docs/design.md` is the specification. A change to an algorithm, a bound or a test
-  strategy updates the matching section (milestones, implemented scope) in the same PR.
+  strategy updates the matching section (implemented scope) in the same PR.
 - Keep badges, the License section and the MSRV statement consistent with `Cargo.toml`.

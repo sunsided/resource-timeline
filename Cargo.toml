@@ -1,6 +1,6 @@
 [package]
 name = "resource-timeline"
-description = "Resource timelines for onboard scheduling: energy, memory, thermal and communication budgets"
+description = "Resource timelines for onboard scheduling: energy, memory, thermal and communication budgets with explained violations, envelopes and allocation-free storage"
 version = "0.0.0"
 edition = "2024"
 rust-version = "1.85"
@@ -8,8 +8,8 @@ authors = ["Markus Mayer <widemeadows@gmail.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/sunsided/resource-timeline"
 readme = "README.md"
-keywords = ["scheduling", "resources", "spacecraft", "timeline", "planning"]
-categories = ["aerospace", "algorithms", "no-std"]
+keywords = ["scheduling", "resources", "spacecraft", "onboard", "timeline"]
+categories = ["aerospace", "algorithms", "embedded", "no-std", "no-std::no-alloc"]
 # Repository tooling stays out of the published crate.
 exclude = [
     ".github/",

@@ -70,10 +70,6 @@
 //!   [`envelope`] and [`greedy`]. Without it the crate needs no allocator: timelines, state
 //!   timelines and plans use [`storage::Fixed`] and [`storage::FixedPlan`].
 //!
-//! ## Status
-//!
-//! Pre-release. See `docs/design.md` for the milestones. The API will change.
-//!
 //! Repository: <https://github.com/sunsided/resource-timeline>
 //!
 #![cfg_attr(

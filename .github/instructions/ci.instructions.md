@@ -27,15 +27,6 @@ applyTo: ".github/workflows/**,Taskfile.dist.yaml,**/Taskfile.dist.yaml,.pre-com
 - `no-std` mirrors `task build:no-std`: the library for `thumbv7em-none-eabihf` with
   `--no-default-features`, with `--no-default-features --features serde` and with
   `--all-features`. Do not drop any of the three builds.
-- Every job that runs cargo checks this repository out into `resource-timeline/` and runs
-  `.github/actions/checkout-siblings`, which checks out the unreleased `temporal-control`
-  (a path dev-dependency) next to it with the `SIBLING_REPOS_TOKEN` secret. Such jobs set
-  `defaults.run.working-directory`, and paths in action inputs (`manifest-path`,
-  `workspaces`, `working-directory`, `RUSTDOCFLAGS`) include the `resource-timeline/` prefix.
-  Drop the action and the layout once `temporal-control` has a crates.io release and the
-  dev-dependency moves to it.
-- `cargo fmt` runs without `--all`, here and in `fuzz/`: `--all` follows path dependencies
-  into the `temporal-control` checkout.
 - `msrv` checks the library only (`cargo hack check --rust-version --all-features`, no
   `--all-targets`): dev-dependencies may need a newer Rust (criterion 0.8 needs 1.86). Do not
   add `--all-targets` back.
@@ -43,9 +34,7 @@ applyTo: ".github/workflows/**,Taskfile.dist.yaml,**/Taskfile.dist.yaml,.pre-com
   accept the `$/` form yet. Re-enable it once actionlint does.
 - `fuzz/` is a separate nightly workspace. Its tasks live in `fuzz/Taskfile.dist.yaml`,
   included as `fuzz:`; CI's `fuzz` job mirrors `task fuzz:build` and `task fuzz:lint`.
-- No `Cargo.lock` is tracked (root or `fuzz/`): this is a library, and local builds in the
-  planning hub patch published siblings to their working trees (the hub's
-  `.cargo/config.toml`), which rewrites the lock on every build. CI resolves fresh from
+- No `Cargo.lock` is tracked (root or `fuzz/`): this is a library. CI resolves fresh from
   crates.io, and no step uses `--locked`.
 - `scripts/check-branch.sh` is the single definition of allowed branch names. It is used by
   the Taskfile, the hook and the CI `branch` job.
