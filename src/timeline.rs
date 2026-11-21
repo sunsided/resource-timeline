@@ -70,7 +70,7 @@ pub enum Kind {
 
 /// The level of one resource over time, built from activity impacts.
 ///
-/// The storage `S` is [`Heap`](crate::storage::Heap) by default; with
+/// The storage `S` is [`storage::Heap`](crate::storage::Heap) by default; with
 /// [`Fixed<N>`](crate::storage::Fixed) the timeline holds at most `N` impacts and never
 /// allocates (see [`storage`](crate::storage)). Heap timelines are created with
 /// [`depletable`] and [`claimable`], timelines with any

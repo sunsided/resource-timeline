@@ -176,7 +176,7 @@ impl Slot for Requirement {
 /// `O(n + r log n)` for `n` sets and `r` requirements and does not allocate unless it reports a
 /// [`StateViolation::Conflict`].
 ///
-/// The storage `S` is [`Heap`](crate::storage::Heap) by default; with
+/// The storage `S` is [`storage::Heap`](crate::storage::Heap) by default; with
 /// [`Fixed<N>`](crate::storage::Fixed) the timeline holds at most `N` impacts and never
 /// allocates. Heap timelines are created with [`new`], timelines with any storage
 /// with [`new_in`](Self::new_in).

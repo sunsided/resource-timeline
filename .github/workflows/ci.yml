@@ -114,7 +114,7 @@ jobs:
     permissions:
       contents: read
     env:
-      RUSTDOCFLAGS: -D warnings
+      RUSTDOCFLAGS: -D warnings --html-in-header ${{ github.workspace }}/resource-timeline/docs/mermaid.html
     defaults:
       run:
         working-directory: resource-timeline

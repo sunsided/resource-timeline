@@ -22,6 +22,10 @@ serde = ["dep:serde"]
 [dependencies]
 serde = { version = "1.0.228", default-features = false, features = ["derive"], optional = true }
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--html-in-header", "docs/mermaid.html"]
+
 [lints.rust]
 missing_docs = "warn"
 unsafe_code = "forbid"

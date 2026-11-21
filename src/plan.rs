@@ -137,7 +137,7 @@ impl<S: Storage> PlanViolation<S> {
 
 /// A set of numeric and state timelines, one per resource, checked together.
 ///
-/// The storage `P` is [`Heap`](crate::storage::Heap) by default. With
+/// The storage `P` is [`storage::Heap`](crate::storage::Heap) by default. With
 /// [`FixedPlan<T, S, N>`](crate::storage::FixedPlan) the plan holds at most `T` numeric and `S`
 /// state timelines with [`Fixed<N>`](crate::storage::Fixed) storage each, and placement,
 /// checks and the earliest-start search never allocate.
