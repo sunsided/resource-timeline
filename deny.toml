@@ -30,7 +30,7 @@ unused-allowed-license = "allow"
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
-# Allows version-less path dependencies, but only in unpublished (publish = false) crates.
+# Allows version-less path dependencies, but only in crates with publish = false (the fuzz crate).
 allow-wildcard-paths = true
 
 [sources]
