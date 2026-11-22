@@ -91,5 +91,9 @@ name = "rush"
 required-features = ["alloc"]
 
 [[example]]
+name = "therapy_group"
+required-features = ["alloc"]
+
+[[example]]
 name = "stn_bridge"
 required-features = ["alloc"]
