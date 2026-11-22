@@ -7,6 +7,7 @@ rust-version = "1.85"
 authors = ["Markus Mayer <widemeadows@gmail.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/sunsided/resource-timeline"
+homepage = "https://sunsided.github.io/planning-and-search/crates/resource-timeline/"
 readme = "README.md"
 keywords = ["scheduling", "resources", "spacecraft", "onboard", "timeline"]
 categories = ["aerospace", "game-development", "embedded", "no-std", "no-std::no-alloc"]
