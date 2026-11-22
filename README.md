@@ -19,6 +19,8 @@ responsible. On top of that come plans over several timelines, earliest-start se
 envelopes that check a flexible schedule once for every start the windows allow. Every
 timeline also comes in a fixed-capacity, allocation-free variant for onboard use.
 
+Part of the [planning and search crates](https://sunsided.github.io/planning-and-search/); see also this crate's [overview page](https://sunsided.github.io/planning-and-search/crates/resource-timeline/).
+
 ## Who this is for
 
 - Flight software and mission operations engineers who place activities on a spacecraft or
