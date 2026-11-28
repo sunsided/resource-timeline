@@ -17,3 +17,4 @@ mod properties;
 mod serde_round_trip;
 mod share;
 mod state;
+mod zone;

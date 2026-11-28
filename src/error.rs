@@ -123,6 +123,13 @@ pub enum Error {
         /// The pool being split.
         pool: Level,
     },
+    /// A spatial-overlap edge links a task with itself or repeats an earlier edge.
+    InvalidOverlap {
+        /// The first task of the edge.
+        first: crate::ActivityId,
+        /// The second task of the edge.
+        second: crate::ActivityId,
+    },
 }
 
 /// The containers a timeline, plan or check keeps, named in [`Error::CapacityExceeded`].
@@ -228,6 +235,13 @@ impl fmt::Display for Error {
             Self::NegativeAmount { amount } => write!(f, "amount {amount} is negative"),
             Self::Oversubscribed { needed, pool } => {
                 write!(f, "needs of {needed} exceed the pool of {pool}")
+            }
+            Self::InvalidOverlap { first, second } => {
+                write!(
+                    f,
+                    "overlap {} - {} is a self-loop or a duplicate",
+                    first.0, second.0
+                )
             }
         }
     }

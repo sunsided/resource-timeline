@@ -70,6 +70,11 @@ name = "timeline"
 harness = false
 required-features = ["alloc"]
 
+[[bench]]
+name = "site"
+harness = false
+required-features = ["alloc"]
+
 [[test]]
 name = "it"
 path = "tests/it/main.rs"
@@ -101,4 +106,8 @@ required-features = ["alloc"]
 
 [[example]]
 name = "relay"
+required-features = ["alloc"]
+
+[[example]]
+name = "site"
 required-features = ["alloc"]

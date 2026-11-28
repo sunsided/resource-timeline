@@ -29,7 +29,7 @@ use crate::{
 
 /// A handle of a numeric [`Timeline`] in a [`Plan`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct TimelineId(usize);
+pub struct TimelineId(pub(crate) usize);
 
 impl TimelineId {
     /// The position of the timeline in [`Plan::timelines`].
@@ -219,6 +219,16 @@ impl<P: PlanStorage> Plan<P> {
     pub fn add_timeline(&mut self, timeline: Timeline<P::Line>) -> Result<TimelineId, Error> {
         self.timelines.try_push(timeline, Container::Timelines)?;
         Ok(TimelineId(self.timelines.len() - 1))
+    }
+
+    /// Reserves room for `extra` more numeric timelines, so that adding them cannot fail for
+    /// lack of room.
+    ///
+    /// # Errors
+    ///
+    /// As for [`add_timeline`](Self::add_timeline), for all `extra` at once.
+    pub(crate) fn reserve_timelines(&mut self, extra: usize) -> Result<(), Error> {
+        self.timelines.try_reserve(extra, Container::Timelines)
     }
 
     /// Adds a state timeline and returns its handle.

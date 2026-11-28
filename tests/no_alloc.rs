@@ -159,3 +159,28 @@ fn fixed_share_split_and_check() {
     assert_eq!(link.lowest_from(0).expect("small"), 0);
 }
 
+/// Zones from an overlap graph report conflicts in a fixed plan without an allocator.
+#[test]
+fn fixed_zone_conflict() {
+    use resource_timeline::zone::{Conflict, Overlaps, occupy};
+
+    let edges = [(ActivityId(1), ActivityId(2))];
+    let mut plan = Plan::<FixedPlan<1, 0, 2>>::new_in();
+    let zones = Overlaps::new(&edges)
+        .expect("valid")
+        .add_zones(&mut plan, 0, 2)
+        .expect("room");
+    let zone = zones.zone(0).expect("edge 0");
+    let demands = [occupy(zone, 0, 6)];
+    plan.place(ActivityId(1), 0, &demands).expect("room");
+    let window = Window::new(0, 20).expect("valid");
+    assert_eq!(plan.earliest_start(&demands, window, 16), Ok(Some(6)));
+    plan.place(ActivityId(2), 4, &demands).expect("room");
+    let violation = plan.first_violation().expect("small").expect("overlap");
+    let conflict = Conflict::of(&plan, &violation).expect("zone");
+    assert_eq!(conflict.zone, zone);
+    assert_eq!(
+        (conflict.at, conflict.first, conflict.second),
+        (4, ActivityId(1), ActivityId(2))
+    );
+}
