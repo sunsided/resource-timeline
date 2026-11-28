@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/sunsided/resource-timeline/compare/v0.1.1...v0.2.0) - 2026-11-28
+
+### Added
+
+- Add zone resources for spatially exclusive workspaces
+- Add decoupled budget shares for agents out of contact
+
+### Changed
+
+- Skip empty reservations when a share changes at the pass start
+- Pin lowest_from on merged pieces and flexible rates
+- Cover every algorithm with an example and document the new state
+
 ## [0.1.1](https://github.com/sunsided/resource-timeline/compare/v0.1.0...v0.1.1) - 2026-11-22
 
 ### Changed
