@@ -384,6 +384,52 @@ impl<'a, S: Storage> Envelope<'a, S> {
         self.level_at(t, Extreme::Upper)
     }
 
+    /// The lowest level any admitted schedule reaches at any tick from `from` on.
+    ///
+    /// On a claimable timeline, `capacity - lowest_from(t)` is the most units the fixed and
+    /// flexible activities can hold at once from `t` on, under every start and duration the
+    /// windows admit: the worst-case need of an agent when a shared resource is split, see
+    /// [`share`](crate::share). The lower envelope is concave between evaluation ticks (see
+    /// [`check`](Self::check)), so its minimum lies at `from` or at an evaluation tick. The value
+    /// is exact where the envelope is; above the cut budget of
+    /// [`with_cut_budget`](Self::with_cut_budget) it is a sound lower bound, so a need computed
+    /// from it may be over-estimated, never under-estimated.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`lower_at`](Self::lower_at), and [`Error::OutOfMemory`] if the
+    /// evaluation ticks cannot be allocated.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use resource_timeline::envelope::{Envelope, Flexible};
+    /// use resource_timeline::{ActivityId, Impact, Timeline, Window};
+    ///
+    /// // Two uplinks of 4 bandwidth units each, anywhere in [0, 10], on a 10-unit link.
+    /// let link = Timeline::claimable(0, 10, 8)?;
+    /// let uplink = [Impact::Claim { start: 0, end: 5, amount: 4 }];
+    /// let window = Window::new(0, 10)?;
+    /// let flexible = [
+    ///     Flexible { activity: ActivityId(1), window, impacts: &uplink },
+    ///     Flexible { activity: ActivityId(2), window, impacts: &uplink },
+    /// ];
+    ///
+    /// // In the worst case both overlap: 8 units held, 2 left.
+    /// assert_eq!(Envelope::new(&link, &flexible)?.lowest_from(0)?, 2);
+    /// # Ok::<(), resource_timeline::Error>(())
+    /// ```
+    pub fn lowest_from(&self, from: Tick) -> Result<Level, Error> {
+        let mut lowest = self.lower_at(from)?;
+        for t in self.evaluation_ticks()? {
+            if t >= from {
+                lowest = lowest.min(self.lower_at(t)?);
+            }
+        }
+
+        Ok(lowest)
+    }
+
     /// Checks the envelopes against the timeline's bounds and end-state targets.
     ///
     /// The envelopes are evaluated at every tick where their shape can change and at the tick

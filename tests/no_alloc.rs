@@ -127,3 +127,60 @@ fn fixed_encoding_round_trips() {
         Ok(profile)
     );
 }
+
+/// Shares are split and checked onboard without an allocator.
+#[test]
+fn fixed_share_split_and_check() {
+    use resource_timeline::share::split;
+
+    let mut shares = [0_i64; 3];
+    for (slot, share) in shares
+        .iter_mut()
+        .zip(split(10, 1, &[2, 0, 4]).expect("fits"))
+    {
+        *slot = share;
+    }
+    assert_eq!(shares, [4, 1, 5]);
+
+    let mut link = Timeline::<Fixed<4>>::claimable_in(0, 10, 4).expect("valid");
+    let others = Impact::Claim {
+        start: 0,
+        end: 100,
+        amount: 10 - shares[0],
+    };
+    link.add(ActivityId(0), others).expect("room");
+    let uplink = Impact::Claim {
+        start: 5,
+        end: 9,
+        amount: 4,
+    };
+    link.add(ActivityId(1), uplink).expect("room");
+    assert_eq!(link.first_violation().expect("small"), None);
+    assert_eq!(link.lowest_from(0).expect("small"), 0);
+}
+
+/// Zones from an overlap graph report conflicts in a fixed plan without an allocator.
+#[test]
+fn fixed_zone_conflict() {
+    use resource_timeline::zone::{Conflict, Overlaps, occupy};
+
+    let edges = [(ActivityId(1), ActivityId(2))];
+    let mut plan = Plan::<FixedPlan<1, 0, 2>>::new_in();
+    let zones = Overlaps::new(&edges)
+        .expect("valid")
+        .add_zones(&mut plan, 0, 2)
+        .expect("room");
+    let zone = zones.zone(0).expect("edge 0");
+    let demands = [occupy(zone, 0, 6)];
+    plan.place(ActivityId(1), 0, &demands).expect("room");
+    let window = Window::new(0, 20).expect("valid");
+    assert_eq!(plan.earliest_start(&demands, window, 16), Ok(Some(6)));
+    plan.place(ActivityId(2), 4, &demands).expect("room");
+    let violation = plan.first_violation().expect("small").expect("overlap");
+    let conflict = Conflict::of(&plan, &violation).expect("zone");
+    assert_eq!(conflict.zone, zone);
+    assert_eq!(
+        (conflict.at, conflict.first, conflict.second),
+        (4, ActivityId(1), ActivityId(2))
+    );
+}

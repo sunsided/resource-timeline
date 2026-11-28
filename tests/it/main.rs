@@ -15,4 +15,6 @@ mod plan;
 mod properties;
 #[cfg(feature = "serde")]
 mod serde_round_trip;
+mod share;
 mod state;
+mod zone;

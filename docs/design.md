@@ -369,6 +369,71 @@ a small common crate only then, per the ecosystem rule for `search-core`.
   fuzzing of the impact list, and Kani or similar bounded proofs for the
   overflow handling.
 
+## Shared resources across agents (budget decoupling)
+
+Agents that share a resource (relay bandwidth, power at a shared station, a
+common work site) cannot see each other's use while out of contact. The
+`share` module decouples them: `share::split(pool, margin, needs)` gives
+every agent its need plus `margin`, spreads what is left of the pool evenly
+(the remainder of the division to the first agents) and fails with
+`Error::Oversubscribed` instead of clipping when the needs and margins do
+not fit. The shares add up to exactly the pool, so an agent that keeps
+within its own share can never oversubscribe the resource.
+
+- **Onboard check.** An agent keeps a claimable timeline at the full
+  capacity and holds the others' part with one claim per allocation period,
+  tagged with a reserved activity id. Every check, search, envelope and the
+  codec then respect the share without new code, and a violation lists the
+  reservation among its contributors ("the share is exhausted"). Changing
+  the share is a `remove` and two `add`s, not a rebuild, and works on fixed
+  storage.
+- **Needs.** The need of an agent from tick `t` is its peak use from `t` on:
+  `share - Timeline::lowest_from(t)`, or under uncertain demand
+  `share - Envelope::lowest_from(t)`, the worst case over every start and
+  duration its windows admit. `lowest_from` is exact: the level is linear
+  between breakpoints, so the minimum lies at `t`, at a breakpoint or on the
+  tick just before one; the lower envelope is concave between evaluation
+  ticks, so its minimum lies at `t` or at an evaluation tick (above the cut
+  budget only a sound lower bound, so the need is over- but never
+  under-estimated). The reservation must cover every tick from `t` on at
+  which the agent holds units, or later use is under-counted.
+- **Re-allocation.** Only the agents in contact can change their shares, so
+  they split the sum of their own current shares by their needs from the
+  contact tick on, never the full capacity: the others keep theirs and may
+  be using them.
+
+Not covered: depletable shared pools (a shared energy store), where a share
+would also have to split the initial level and the reserve; and
+re-allocation policies other than even slack (proportional to need,
+priorities). Temporal decoupling of the agents' schedules belongs to
+`temporal-control`.
+
+## Zone resources
+
+Spatially exclusive workspaces (two crews or robots must not occupy the
+same zone at once) are unary claimable timelines: capacity one, occupied
+by a claim of one unit per task (`zone::occupy`). A task may occupy several
+zones as several demands of one activity. An overlap breaks the zone's
+lower bound; `zone::Conflict::of` turns that plan violation into the zone,
+the first tick and both tasks (the two smallest ids if more enter at once;
+an activity placed twice over itself is no conflict between two tasks).
+Plans, the earliest-start search, envelopes with precedences and fixed
+storage apply unchanged, so the checks stay allocation-free.
+
+Models that state spatial exclusion as an undirected overlap graph between
+tasks use `zone::Overlaps`: it rejects self-loops and repeated edges and
+adds one zone per edge (all or nothing), occupied by exactly the two tasks
+of the edge. That is exact, two tasks exclude each other if and only if they
+share an edge, but it uses one timeline per edge; a clique cover of the
+overlap graph would need fewer zones and is left to the caller.
+
+The `site` benchmark runs a serial schedule generation scheme over a
+synthetic instance with the dimensions of the multi-crew case of the ISARC
+2026 paper on RL task allocation (86 tasks, 7 crews in 5 trades, 36
+components, 34 overlap edges). It does not reproduce the paper's tasks,
+durations or edges (the data was not available when it was written), so the
+results are not comparable with the paper's.
+
 ## Implemented scope
 
 - **Piecewise-constant timelines**: depletable and claimable
@@ -390,6 +455,11 @@ a small common crate only then, per the ecosystem rule for `search-core`.
 - **Incremental checks and fixed-capacity storage**: add and remove
   on a sorted change-point profile, `O(n)` re-checks, and the
   allocation-free variant with const-generic capacity.
+- **Shared resources across agents**: per-agent shares with margins,
+  re-split by the agents in contact, needs from `lowest_from` on
+  timelines and envelopes.
+- **Zone resources**: unary zones, conflicts naming the zone and both
+  tasks, zones from overlap graphs.
 
 ## Open questions
 
@@ -407,3 +477,8 @@ a small common crate only then, per the ecosystem rule for `search-core`.
   rate impacts that never end?
 - How much of the explanation (minimal conflict sets) belongs here
   versus in the replanner?
+- Should overlap graphs be turned into fewer zones by a clique cover, and
+  should the crate ship a precedence-aware serial scheduler instead of
+  leaving that loop to the examples and the benchmark?
+- Should shares of depletable pools (energy) be supported, splitting the
+  initial level and the reserve as well?

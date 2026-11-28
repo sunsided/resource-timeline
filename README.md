@@ -16,8 +16,10 @@ tracks one resource over integer ticks (a battery that drains and charges at giv
 data buffer, an instrument that can only be claimed once at a time, or a mode that has to hold
 during an observation), and the check reports the first violation with the activities
 responsible. On top of that come plans over several timelines, earliest-start search, and
-envelopes that check a flexible schedule once for every start the windows allow. Every
-timeline also comes in a fixed-capacity, allocation-free variant for onboard use.
+envelopes that check a flexible schedule once for every start the windows allow, shares that
+split a resource between agents out of contact, and zones that keep crews out of each other's
+workspace. Every timeline also comes in a fixed-capacity, allocation-free variant for onboard
+use.
 
 Part of the [planning and search crates](https://sunsided.github.io/planning-and-search/); see also this crate's [overview page](https://sunsided.github.io/planning-and-search/crates/resource-timeline/).
 
@@ -37,6 +39,13 @@ Part of the [planning and search crates](https://sunsided.github.io/planning-and
   allocation-free variants keep checks off the heap inside a frame. See
   [`examples/colony.rs`](https://github.com/sunsided/resource-timeline/blob/main/examples/colony.rs)
   and [`examples/rush.rs`](https://github.com/sunsided/resource-timeline/blob/main/examples/rush.rs).
+- Multi-agent and multi-robot systems whose agents share a resource (relay bandwidth, power at
+  a shared station, a work site) but cannot see each other's use between contacts: budget
+  shares let each agent check only its own part onboard. See
+  [`examples/relay.rs`](https://github.com/sunsided/resource-timeline/blob/main/examples/relay.rs).
+- Construction and production schedulers with spatially exclusive workspaces: zones turn an
+  overlap graph between tasks into unary resources, with conflicts that name the zone and both
+  tasks. See [`examples/site.rs`](https://github.com/sunsided/resource-timeline/blob/main/examples/site.rs).
 - For the timing side of the same schedule (whether its temporal constraints can be met under
   uncertain durations, and executing it), use
   [temporal-control](https://github.com/sunsided/temporal-control). The two crates share only a
@@ -72,10 +81,40 @@ Part of the [planning and search crates](https://sunsided.github.io/planning-and
 - Borrowed search scratch for small onboard stacks (`SearchScratch`)
 - A bridge example that checks a schedule with the windows of `temporal-control`'s dispatcher,
   see [`examples/stn_bridge.rs`](https://github.com/sunsided/resource-timeline/blob/main/examples/stn_bridge.rs)
+- Decoupled budgets for resources shared by agents out of contact (`share::split`): per-agent
+  shares with margins that never add up to more than the capacity, re-split by the agents in
+  contact, with exact needs from `Timeline::lowest_from` and, under uncertain demand,
+  `Envelope::lowest_from`
+- Zone resources for spatially exclusive workspaces (`zone`): unary zones occupied by tasks,
+  zones from an undirected overlap graph (one per edge, exact), and conflicts that name the
+  zone and both tasks; allocation-free on fixed storage
 - Brute-force oracles for every check, compared in property tests
 
 See [docs/design.md](https://github.com/sunsided/resource-timeline/blob/main/docs/design.md) for
 the semantics of each check.
+
+## Examples
+
+Every algorithm has a small example built on a real-world case. Run one with
+`cargo run --example <name>`.
+
+| Algorithm | Example |
+| --- | --- |
+| First violation with contributors, rates, state timelines, plans, greedy scheduling | [`rover`](https://github.com/sunsided/resource-timeline/blob/main/examples/rover.rs): a Mars rover sol with energy, memory, transmitter, instrument temperature and comm passes |
+| Earliest-start search with claims and states, greedy scheduling | [`colony`](https://github.com/sunsided/resource-timeline/blob/main/examples/colony.rs): a settler's day in a colony game |
+| End-state targets | [`rush`](https://github.com/sunsided/resource-timeline/blob/main/examples/rush.rs): a strategy game build order against a scouted rush |
+| Level envelopes over independent start windows, state envelopes | [`kitchen`](https://github.com/sunsided/resource-timeline/blob/main/examples/kitchen.rs): a restaurant kitchen's circuit load and combi-oven modes before service |
+| Envelopes with uncertain durations | [`therapy_group`](https://github.com/sunsided/resource-timeline/blob/main/examples/therapy_group.rs): admissions to a therapy group with a hard seat limit |
+| Envelopes with uncertain durations and precedences, windows from `temporal-control` | [`stn_bridge`](https://github.com/sunsided/resource-timeline/blob/main/examples/stn_bridge.rs): a rover STNU checked before and during execution |
+| Fixed-capacity plans, `fits` and borrowed search scratch, closed-form search along rates, profile extraction (samples, export, breakpoints) and the checksummed codec for profiles and timelines | [`cubesat`](https://github.com/sunsided/resource-timeline/blob/main/examples/cubesat.rs): a small satellite replans an image onboard and downlinks its battery profile |
+| Budget shares, re-allocation at contact, worst-case needs from envelopes | [`relay`](https://github.com/sunsided/resource-timeline/blob/main/examples/relay.rs): three lunar rovers share a relay orbiter's return link |
+| Zone resources from an overlap graph, zone conflicts, serial scheduling with precedences | [`site`](https://github.com/sunsided/resource-timeline/blob/main/examples/site.rs): crews on one floor of a building site |
+
+The `site` benchmark (`cargo bench --bench site`) schedules a **synthetic** instance with the
+dimensions of the multi-crew case in the ISARC 2026 paper on RL task allocation in flexible
+construction scenarios (86 tasks, 7 crews in 5 trades, 36 components, 34 overlap edges). It does
+not reproduce the paper's tasks, durations or edges (the paper's data was not available when it
+was written), so its numbers are not comparable with the paper's results.
 
 ## Installation
 
