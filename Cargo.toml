@@ -111,3 +111,11 @@ required-features = ["alloc"]
 [[example]]
 name = "site"
 required-features = ["alloc"]
+
+[[example]]
+name = "cubesat"
+required-features = ["alloc"]
+
+[[example]]
+name = "kitchen"
+required-features = ["alloc"]
