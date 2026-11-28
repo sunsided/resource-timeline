@@ -52,7 +52,7 @@ fn share_line(share: Level) -> Result<Timeline, Error> {
 
 /// Holds the part of the link above `share` for the others from `from` to `until`.
 fn reserve(line: &mut Timeline, from: Tick, until: Tick, share: Level) -> Result<(), Error> {
-    if share < LINK {
+    if share < LINK && from < until {
         line.add(OTHERS, downlink(from, until, LINK - share))?;
     }
 
