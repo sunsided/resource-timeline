@@ -98,6 +98,84 @@ fn envelope_lowest_from_respects_precedences() {
     assert_eq!(ordered.lowest_from(16), Ok(10));
 }
 
+/// Pieces merged into one breakpoint (same slope, continuing level) and pieces that fall to
+/// the tick before an upward jump are covered; each case agrees with a tick-by-tick scan.
+#[test]
+fn lowest_from_covers_merged_and_falling_pieces() {
+    use resource_timeline::Bounds;
+
+    let bounds = Bounds::new(-1_000, 1_000).expect("valid");
+    let scan = |line: &Timeline, from| (from..60).map(|t| line.level_at(t).expect("small")).min();
+    let claim = |start, end, amount| Impact::Claim { start, end, amount };
+    let rate = |start, end, per_tick| Impact::Rate {
+        start,
+        end,
+        per_tick,
+    };
+    let cases: [&[Impact]; 3] = [
+        &[claim(10, 20, 90), claim(30, 40, 90)],
+        &[
+            rate(0, 10, -2),
+            rate(10, 20, -2),
+            Impact::Step { at: 25, delta: 50 },
+        ],
+        &[
+            rate(0, 10, -3),
+            Impact::Step { at: 10, delta: 40 },
+            rate(15, 25, -3),
+        ],
+    ];
+    for impacts in cases {
+        let mut line = Timeline::depletable(0, 100, bounds, 8).expect("valid");
+        for (id, impact) in (1..).zip(impacts) {
+            line.add(ActivityId(id), *impact).expect("room");
+        }
+
+        for from in [0, 5, 12, 22] {
+            assert_eq!(
+                line.lowest_from(from).ok(),
+                scan(&line, from),
+                "{impacts:?} from {from}"
+            );
+        }
+    }
+}
+
+/// An envelope over flexible rates is flat once every start has drained fully, and its
+/// lowest level agrees with the lower envelope at every tick.
+#[test]
+fn envelope_lowest_from_covers_flexible_rates() {
+    use resource_timeline::envelope::Flexible;
+    use resource_timeline::{Bounds, Window};
+
+    let line =
+        Timeline::depletable(0, 100, Bounds::new(-1_000, 1_000).expect("valid"), 8).expect("valid");
+    let drain = [Impact::Rate {
+        start: 0,
+        end: 10,
+        per_tick: -1,
+    }];
+    let window = Window::new(0, 20).expect("valid");
+    let flexible = [
+        Flexible {
+            activity: ActivityId(1),
+            window,
+            impacts: &drain,
+        },
+        Flexible {
+            activity: ActivityId(2),
+            window,
+            impacts: &drain,
+        },
+    ];
+    let envelope = Envelope::new(&line, &flexible).expect("valid");
+    let lower = |t| envelope.lower_at(t).expect("small");
+    assert_eq!((lower(10), lower(19)), (80, 80));
+    for from in [0, 5, 15] {
+        assert_eq!(envelope.lowest_from(from).ok(), (from..60).map(lower).min());
+    }
+}
+
 /// Negative inputs and too little pool are typed errors, never clipped shares.
 #[test]
 fn split_rejects_bad_input() {
