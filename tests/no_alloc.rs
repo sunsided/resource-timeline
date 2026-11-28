@@ -127,3 +127,35 @@ fn fixed_encoding_round_trips() {
         Ok(profile)
     );
 }
+
+/// Shares are split and checked onboard without an allocator.
+#[test]
+fn fixed_share_split_and_check() {
+    use resource_timeline::share::split;
+
+    let mut shares = [0_i64; 3];
+    for (slot, share) in shares
+        .iter_mut()
+        .zip(split(10, 1, &[2, 0, 4]).expect("fits"))
+    {
+        *slot = share;
+    }
+    assert_eq!(shares, [4, 1, 5]);
+
+    let mut link = Timeline::<Fixed<4>>::claimable_in(0, 10, 4).expect("valid");
+    let others = Impact::Claim {
+        start: 0,
+        end: 100,
+        amount: 10 - shares[0],
+    };
+    link.add(ActivityId(0), others).expect("room");
+    let uplink = Impact::Claim {
+        start: 5,
+        end: 9,
+        amount: 4,
+    };
+    link.add(ActivityId(1), uplink).expect("room");
+    assert_eq!(link.first_violation().expect("small"), None);
+    assert_eq!(link.lowest_from(0).expect("small"), 0);
+}
+

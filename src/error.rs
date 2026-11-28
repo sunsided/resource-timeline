@@ -111,6 +111,18 @@ pub enum Error {
         /// The number of candidate checks the search was allowed.
         checks: usize,
     },
+    /// A share split was given a negative pool, need or margin.
+    NegativeAmount {
+        /// The rejected amount.
+        amount: Level,
+    },
+    /// The needs plus margins of a share split exceed the pool.
+    Oversubscribed {
+        /// The sum of the needs and margins, saturated at [`Level::MAX`].
+        needed: Level,
+        /// The pool being split.
+        pool: Level,
+    },
 }
 
 /// The containers a timeline, plan or check keeps, named in [`Error::CapacityExceeded`].
@@ -212,6 +224,10 @@ impl fmt::Display for Error {
             }
             Self::SearchExhausted { checks } => {
                 write!(f, "search exhausted its budget of {checks} checks")
+            }
+            Self::NegativeAmount { amount } => write!(f, "amount {amount} is negative"),
+            Self::Oversubscribed { needed, pool } => {
+                write!(f, "needs of {needed} exceed the pool of {pool}")
             }
         }
     }

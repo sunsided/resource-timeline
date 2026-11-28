@@ -98,3 +98,7 @@ required-features = ["alloc"]
 [[example]]
 name = "stn_bridge"
 required-features = ["alloc"]
+
+[[example]]
+name = "relay"
+required-features = ["alloc"]

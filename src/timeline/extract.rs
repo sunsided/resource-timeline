@@ -355,6 +355,65 @@ impl<S: Storage> Timeline<S> {
         Ok(LevelProfile { origin, changes })
     }
 
+    /// The lowest level at any tick from `from` on.
+    ///
+    /// On a claimable timeline, `capacity - lowest_from(t)` is the peak number of units held
+    /// at or after `t`: the need of an agent when a shared resource is split again, see
+    /// [`share`](crate::share). The level is linear between breakpoints, so the minimum lies
+    /// at `from`, at a breakpoint, or on the tick just before one (a falling rate followed by
+    /// an upward jump). Costs `O(n)` and never allocates.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::BeforeStart`] if `from` precedes the timeline start.
+    /// - [`Error::Overflow`] if a level does not fit a [`Level`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use resource_timeline::{ActivityId, Bounds, Impact, Timeline};
+    ///
+    /// let mut battery = Timeline::depletable(0, 50, Bounds::new(0, 100)?, 8)?;
+    /// battery.add(ActivityId(1), Impact::Rate { start: 10, end: 20, per_tick: -2 })?;
+    /// battery.add(ActivityId(2), Impact::Step { at: 15, delta: 30 })?;
+    ///
+    /// // Down to 42 at tick 14, then charged to 70 and drained to 60.
+    /// assert_eq!(battery.lowest_from(0)?, 42);
+    /// assert_eq!(battery.lowest_from(15)?, 60);
+    /// # Ok::<(), resource_timeline::Error>(())
+    /// ```
+    pub fn lowest_from(&self, from: Tick) -> Result<Level, Error> {
+        if from < self.start {
+            return Err(Error::BeforeStart {
+                at: from,
+                start: self.start,
+            });
+        }
+
+        let mut breakpoints = self.breakpoints();
+        let mut line = breakpoints.next().ok_or(Error::Overflow)??;
+        let mut lowest = None;
+        for point in breakpoints {
+            let point = point?;
+            if point.at > from {
+                let at_from = match lowest {
+                    Some(lowest) => lowest,
+                    None => line.level_at(from)?,
+                };
+                // `point.at - 1 >= from`, so no overflow and the tick lies in the range.
+                let before = line.level_at(point.at - 1)?;
+                lowest = Some(at_from.min(before).min(point.level));
+            }
+
+            line = point;
+        }
+
+        match lowest {
+            Some(lowest) => Ok(lowest),
+            None => line.level_at(from),
+        }
+    }
+
     /// The pieces of the stored level line, without tentative changes.
     fn segments(&self) -> Segments<'_> {
         let frame = Frame {

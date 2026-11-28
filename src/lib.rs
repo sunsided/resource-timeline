@@ -24,7 +24,9 @@
 //! - [`greedy::schedule`] places activities in priority order at their earliest feasible start;
 //! - [`envelope::Envelope`] bounds the level over every schedule that start [`Window`]s admit,
 //!   including uncertain durations and precedences, so a flexible schedule can be checked once
-//!   instead of per dispatch decision; [`envelope::StateEnvelope`] does the same for states.
+//!   instead of per dispatch decision; [`envelope::StateEnvelope`] does the same for states;
+//! - [`share::split`] decouples a resource shared by agents out of contact into per-agent
+//!   shares that never add up to more than the capacity, re-split when agents meet.
 //!
 //! Every timeline and plan is generic over its [`storage`]: heap-allocated by default, or
 //! fixed-capacity and allocation-free ([`FixedTimeline`], [`storage::FixedPlan`]) for onboard
@@ -111,6 +113,7 @@ mod impact;
 mod plan;
 #[cfg(feature = "serde")]
 mod serde_impls;
+pub mod share;
 mod state;
 pub mod storage;
 mod target;
